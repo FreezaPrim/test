@@ -3,6 +3,8 @@ import pandas as pd
 from openpyxl import Workbook
 import json
 import datetime
+import io
+from PIL import Image
 
 # Page configuration
 st.set_page_config(page_title="Leads Management Portal", page_icon=":page_with_curl:", layout="wide")
@@ -111,11 +113,12 @@ def navigation_ui(role):
         "Manage Users": "manage_users",
         "Assign Leads": "assign_leads",
         "View Performance": "view_performance",
-        "My Leads": "my_leads"
+        "My Leads": "my_leads",
+        "Fraud Detection": "fraud_detection",
     }
-    
+
     if role == "agent":
-        actions = {key: value for key, value in actions.items() if value in ["update", "my_leads"]}
+        actions = {key: value for key, value in actions.items() if value in ["update", "my_leads", "fraud_detection"]}
     
     for label, action in actions.items():
         if st.sidebar.button(label, key=f"nav_{action}"):
@@ -371,6 +374,79 @@ def my_leads_ui(display_data):
     agent_leads = display_data[display_data["Assigned Agent"] == st.session_state.username]
     st.dataframe(agent_leads)
 
+
+def fraud_detection_ui():
+    import fraud_detector
+
+    st.markdown("## Receipt Fraud Detection")
+    st.markdown(
+        "Upload a deposit / transfer receipt image. "
+        "The tool will scan it for signs of digital manipulation."
+    )
+
+    uploaded = st.file_uploader(
+        "Upload receipt image (JPEG or PNG)",
+        type=["jpg", "jpeg", "png"],
+        key="fraud_upload",
+    )
+
+    if uploaded is None:
+        st.info("No image uploaded yet.")
+        return
+
+    raw = uploaded.read()
+    img = Image.open(io.BytesIO(raw))
+
+    col_orig, col_ela = st.columns(2)
+    with col_orig:
+        st.markdown("**Original Image**")
+        st.image(img, use_column_width=True)
+
+    with st.spinner("Analyzing image for tampering…"):
+        report = fraud_detector.analyze(raw)
+
+    with col_ela:
+        st.markdown("**Error Level Analysis (ELA)**")
+        st.image(report.ela_image, use_column_width=True)
+        st.caption("Brighter = higher compression error. Uniform brightness = untouched.")
+
+    # ── Verdict banner ────────────────────────────────────────────────────────
+    st.markdown("---")
+    score = report.risk_score
+    verdict = report.verdict
+
+    color = {"LIKELY GENUINE": "#27ae60", "SUSPICIOUS": "#e67e22", "LIKELY FAKE": "#e74c3c"}[verdict]
+    st.markdown(
+        f"""
+        <div style="background:{color};padding:18px 24px;border-radius:10px;text-align:center;">
+            <span style="font-size:1.5rem;font-weight:700;color:white;">{verdict}</span><br>
+            <span style="color:white;font-size:1rem;">Risk Score: {score} / 100</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("### Analysis Details")
+
+    sev_icon = {"high": "🔴", "medium": "🟡", "low": "🟠", "ok": "🟢"}
+    sev_order = {"high": 0, "medium": 1, "low": 2, "ok": 3}
+    sorted_findings = sorted(report.findings, key=lambda f: sev_order.get(f.severity, 9))
+
+    for f in sorted_findings:
+        icon = sev_icon.get(f.severity, "⚪")
+        with st.expander(f"{icon} {f.label}  —  {f.severity.upper()}"):
+            st.write(f.detail)
+
+    st.markdown("---")
+    st.markdown("**Noise Pattern Map**")
+    st.image(report.noise_image, use_column_width=True)
+    st.caption("Inconsistent noise across regions can indicate blended / pasted content.")
+
+    st.markdown(
+        "> **Disclaimer:** This tool uses image-forensics heuristics and is not a definitive legal proof. "
+        "Always consult your bank or a certified forensic expert for official verification."
+    )
+
 # Main execution flow
 users = load_user_data()
 existing_data = read_excel(EXCEL_FILE, SHEET_NAME, COLUMNS)
@@ -414,6 +490,8 @@ if st.session_state.logged_in:
         view_performance_ui(existing_data, users)
     elif view == "my_leads":
         my_leads_ui(display_data)
+    elif view == "fraud_detection":
+        fraud_detection_ui()
 else:
     st.sidebar.markdown("Please login to access the portal.")
 
