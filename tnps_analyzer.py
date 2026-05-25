@@ -187,11 +187,18 @@ def load_data(folder: str, mapping_file: str, use_cache: bool = True) -> tuple[p
     cached_fps: dict = {}
     cached_df: pd.DataFrame = pd.DataFrame()
 
+    _CACHE_REQUIRED_COLS = {"Week", "Month", "Hour", "DayOfWeek", "NPS_Category", "_source_file"}
     if use_cache and cache_path.exists() and fingerprint_path.exists():
         try:
             cached_fps = json.loads(fingerprint_path.read_text())
             cached_df = pd.read_parquet(cache_path)
-            log.info("Loaded cache: %s rows", f"{len(cached_df):,}")
+            # Invalidate cache if enrichment columns added after this cache was built are missing
+            if not _CACHE_REQUIRED_COLS.issubset(cached_df.columns):
+                missing_c = _CACHE_REQUIRED_COLS - set(cached_df.columns)
+                log.warning("Cache is stale (missing columns: %s); re-reading all files.", missing_c)
+                cached_fps, cached_df = {}, pd.DataFrame()
+            else:
+                log.info("Loaded cache: %s rows", f"{len(cached_df):,}")
         except Exception as e:
             log.warning("Cache unreadable (%s); re-reading all files.", e)
             cached_fps, cached_df = {}, pd.DataFrame()
@@ -843,8 +850,9 @@ def build_sla_breach_heatmap(df: pd.DataFrame) -> pd.DataFrame:
                                   columns=pivot_surveys.columns, fill_value=0)
     rate = (pivot_det / pivot_surveys.replace(0, np.nan) * 100).round(1).fillna(0)
 
-    # Mark only breaches
-    breach = rate.applymap(lambda x: x if x >= threshold else 0)
+    # Mark only breaches  (applymap → map for pandas 2.x compatibility)
+    _map_fn = rate.map if hasattr(rate, "map") and callable(getattr(rate, "map")) and rate.map.__module__ != "builtins" else rate.applymap
+    breach = rate.apply(lambda col: col.map(lambda x: x if x >= threshold else 0))
     breach.index.name = "Queue \\ Date"
     # Drop queues with no breaches at all
     breach = breach[breach.sum(axis=1) > 0]
@@ -1376,69 +1384,78 @@ def main():
 
     data, mapping = load_data(CONFIG["data_folder"], CONFIG["mapping_file"], use_cache)
 
+    def safe(name, fn, *args, **kwargs):
+        """Call fn(*args) and return its result; on any error log and return empty DataFrame."""
+        try:
+            result = fn(*args, **kwargs)
+            return result if result is not None else pd.DataFrame()
+        except Exception as exc:
+            log.error("  ✗ %s failed: %s", name, exc)
+            return pd.DataFrame()
+
     log.info("Building KPI summary…")
-    kpi = build_kpi_summary(data)
+    kpi = safe("KPI", build_kpi_summary, data)
 
     log.info("Building daily and monthly trends…")
-    daily   = build_daily_trend(data)
-    monthly = build_monthly_trend(data)
+    daily   = safe("Daily Trend",   build_daily_trend,   data)
+    monthly = safe("Monthly Trend", build_monthly_trend, data)
 
     log.info("Building Short Code × Day pivot…")
-    sc_pivot = build_shortcode_daily_pivot(data)
+    sc_pivot = safe("ShortCode Pivot", build_shortcode_daily_pivot, data)
 
     log.info("Building catalogs…")
-    sc_catalog = build_shortcode_catalog(data)
-    q_catalog  = build_queue_catalog(data)
+    sc_catalog = safe("ShortCode Catalog", build_shortcode_catalog, data)
+    q_catalog  = safe("Queue Catalog",     build_queue_catalog,     data)
 
     log.info("Building mapping coverage & duplicate detection…")
-    map_coverage = build_mapping_coverage(data)
-    duplicates   = build_duplicate_surveys(data)
+    map_coverage = safe("Mapping Coverage",  build_mapping_coverage,  data)
+    duplicates   = safe("Duplicate Surveys", build_duplicate_surveys, data)
 
     log.info("Building dimension breakdowns…")
     by_dim = {
-        "By_OwnerTeam":   breakdown_by(data, "OWNER_TEAM"),
-        "By_Substatus":   breakdown_by(data, "SUBSTATUS"),
-        "By_CallType":    breakdown_by(data, "CALL_TYPE"),
-        "By_ProdType":    breakdown_by(data, "PROD_TYPE"),
-        "By_Reachability": breakdown_by(data, "REACHABILITY"),
-        "By_FCR_Flag":    breakdown_by(data, "FCR_FLAG"),
-        "By_Region":      breakdown_by(data, "Region"),
-        "By_Lev1":        breakdown_by(data, "Q Mapping Lev 1"),
-        "By_Lev2":        breakdown_by(data, "Q Mapping Lev 2 Combined"),
-        "By_Lev3":        breakdown_by(data, "Q Mapping Lev 3 New PF Seg"),
-        "By_Lev4":        breakdown_by(data, "Q Mapping Lev 4 Seg"),
-        "By_Site":        breakdown_by(data, "Site"),
+        "By_OwnerTeam":    safe("By_OwnerTeam",    breakdown_by, data, "OWNER_TEAM"),
+        "By_Substatus":    safe("By_Substatus",    breakdown_by, data, "SUBSTATUS"),
+        "By_CallType":     safe("By_CallType",     breakdown_by, data, "CALL_TYPE"),
+        "By_ProdType":     safe("By_ProdType",     breakdown_by, data, "PROD_TYPE"),
+        "By_Reachability": safe("By_Reachability", breakdown_by, data, "REACHABILITY"),
+        "By_FCR_Flag":     safe("By_FCR_Flag",     breakdown_by, data, "FCR_FLAG"),
+        "By_Region":       safe("By_Region",       breakdown_by, data, "Region"),
+        "By_Lev1":         safe("By_Lev1",         breakdown_by, data, "Q Mapping Lev 1"),
+        "By_Lev2":         safe("By_Lev2",         breakdown_by, data, "Q Mapping Lev 2 Combined"),
+        "By_Lev3":         safe("By_Lev3",         breakdown_by, data, "Q Mapping Lev 3 New PF Seg"),
+        "By_Lev4":         safe("By_Lev4",         breakdown_by, data, "Q Mapping Lev 4 Seg"),
+        "By_Site":         safe("By_Site",         breakdown_by, data, "Site"),
     }
 
     log.info("Building heatmap, patterns, cross-tabs…")
-    heatmap  = build_lev3_lev4_heatmap(data)
-    hour_p   = build_hour_pattern(data)
-    dow_p    = build_dow_pattern(data)
-    repeats  = build_repeat_detractors(data)
-    q2_ct    = build_q2_q1_crosstab(data, "Q2_ANSWER: Attitude", "Attitude")
-    q3_ct    = build_q2_q1_crosstab(data, "Q3_Answer: Fulfillment", "Fulfillment")
-    agent_rk = build_agent_ranking(data)
+    heatmap  = safe("Heatmap",        build_lev3_lev4_heatmap, data)
+    hour_p   = safe("Hour Pattern",   build_hour_pattern,      data)
+    dow_p    = safe("DoW Pattern",    build_dow_pattern,       data)
+    repeats  = safe("Repeat Det.",    build_repeat_detractors, data)
+    q2_ct    = safe("Q2 Crosstab",    build_q2_q1_crosstab, data, "Q2_ANSWER: Attitude",    "Attitude")
+    q3_ct    = safe("Q3 Crosstab",    build_q2_q1_crosstab, data, "Q3_Answer: Fulfillment", "Fulfillment")
+    agent_rk = safe("Agent Ranking",  build_agent_ranking,     data)
 
     log.info("Building new analytics: cohort, toxic combos, velocity, benchmarks…")
-    cohort      = build_cohort_analysis(data)
-    toxic       = build_toxic_combos(data)
-    velocity    = build_velocity_alerts(data)
-    peer_bench  = build_agent_peer_benchmark(data)
-    top_bottom  = build_top_bottom(data)
-    waterfall   = build_nps_waterfall(data)
-    sla_breach  = build_sla_breach_heatmap(data)
-    channel_cmp = build_channel_comparison(data)
-    fcr_impact  = build_fcr_impact(data)
+    cohort      = safe("Cohort Analysis",    build_cohort_analysis,    data)
+    toxic       = safe("Toxic Combos",       build_toxic_combos,       data)
+    velocity    = safe("Velocity Alerts",    build_velocity_alerts,    data)
+    peer_bench  = safe("Peer Benchmark",     build_agent_peer_benchmark, data)
+    top_bottom  = safe("Top/Bottom 10",      build_top_bottom,         data)
+    waterfall   = safe("NPS Waterfall",      build_nps_waterfall,      data)
+    sla_breach  = safe("SLA Breach Heatmap", build_sla_breach_heatmap, data)
+    channel_cmp = safe("Channel Comparison", build_channel_comparison, data)
+    fcr_impact  = safe("FCR Impact",         build_fcr_impact,         data)
 
     log.info("Building forecasts (Holt-Winters + per-queue + CI)…")
-    forecast      = build_forecast(daily)
-    queue_fc      = build_per_queue_forecast(data, daily)
+    forecast = safe("Forecast",          build_forecast,            daily)
+    queue_fc = safe("Per-Queue Forecast", build_per_queue_forecast, data, daily)
 
     breach_info = forecast.attrs.get("breach_date", "N/A") if not forecast.empty else "N/A"
     log.info("Forecast detractor rate breach date: %s", breach_info)
 
     log.info("Building executive summary…")
-    exec_summary = build_executive_summary(data, kpi, daily, forecast)
+    exec_summary = safe("Executive Summary", build_executive_summary, data, kpi, daily, forecast)
 
     log.info("Writing Excel report…")
     sheets = {
