@@ -133,7 +133,8 @@ def parse_args():
     p.add_argument("--horizon", default=None, type=int, help="Forecast horizon in days")
     p.add_argument("--config",  default=None, help="Path to config.yaml override file")
     p.add_argument("--no-cache", action="store_true", help="Ignore incremental cache, re-read all files")
-    return p.parse_args()
+    args, _ = p.parse_known_args()  # parse_known_args ignores IDE-injected flags (e.g. VS Code kernel args)
+    return args
 
 
 def apply_config_overrides(args):
