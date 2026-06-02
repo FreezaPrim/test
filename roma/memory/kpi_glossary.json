@@ -1,0 +1,87 @@
+{
+  "kpis": [
+    {
+      "name": "tNPS / NPS",
+      "aliases": ["tnps", "nps", "recommend", "promoter", "net_promoter", "loyalty_score"],
+      "definition": "Loyalty on a 0-10 recommend question. Promoters 9-10, Passives 7-8, Detractors 0-6.",
+      "formula": "NPS = %Promoters - %Detractors"
+    },
+    {
+      "name": "CSAT",
+      "aliases": ["csat", "satisfaction", "sat_score", "customer_satisfaction"],
+      "definition": "Satisfaction with an interaction on a 1-5 or 1-10 scale.",
+      "formula": "Top-box % = responses in top ratings / total responses * 100; or average score"
+    },
+    {
+      "name": "CES",
+      "aliases": ["ces", "effort", "customer_effort"],
+      "definition": "How much effort the customer spent to resolve the issue (lower is better).",
+      "formula": "Average effort rating; derived from VOC mentions of repeat calls / branch visits"
+    },
+    {
+      "name": "FCR (proxy)",
+      "aliases": ["fcr", "first_call", "first_contact", "resolved_first"],
+      "definition": "Issue solved on first contact.",
+      "formula": "FCR = (is_repeat_caller == False) AND (Customer Compensated from CC? == 'Yes within the call')"
+    },
+    {
+      "name": "Detractor",
+      "aliases": ["detractor", "voc", "rating", "score"],
+      "definition": "Survey respondent scoring 0-6 on the NPS question.",
+      "formula": "Detractor if score <= 6"
+    },
+    {
+      "name": "Contact Rate",
+      "aliases": ["contact_rate", "in_micro", "contacted"],
+      "definition": "Share of detractors who appear in the Micro (call) dataset.",
+      "formula": "Contact Rate = detractors in Micro / total detractors"
+    },
+    {
+      "name": "Reach Rate",
+      "aliases": ["call0-1", "call_0_1", "call01", "reach", "reached", "call_happened"],
+      "definition": "Share of contacted customers actually reached (call happened).",
+      "formula": "Reach Rate = rows where call0-1 == 1 / appropriate base"
+    },
+    {
+      "name": "Win-back Rate",
+      "aliases": ["winback", "win_back", "win-back", "recovered", "returned"],
+      "definition": "Customers who came back after a retention attempt.",
+      "formula": "Win-back = customers returned / total retention attempts"
+    },
+    {
+      "name": "Retention Rate",
+      "aliases": ["retention", "retained"],
+      "definition": "At-risk customers who stayed.",
+      "formula": "Retention = customers stayed / total at-risk customers"
+    },
+    {
+      "name": "Variance %",
+      "aliases": ["variance", "vs_target", "target"],
+      "definition": "Actual versus target.",
+      "formula": "Variance % = (Actual - Target) / Target"
+    },
+    {
+      "name": "Severity Score",
+      "aliases": ["severity", "risk_score"],
+      "definition": "Sum of weighted linguistic risk signals in the VOC.",
+      "formula": "Buckets: None 0, Low 1-3, Medium 4-8, High 9-15, Critical 16+"
+    },
+    {
+      "name": "Churn signal",
+      "aliases": ["churn", "churned", "cancel", "cancelled", "canceled", "at_risk"],
+      "definition": "Customer leaving for a competitor; flagged by churn language in VOC.",
+      "formula": "Churn rate = customers lost in period / customers at start of period"
+    },
+    {
+      "name": "QA Auto-Score",
+      "aliases": ["qa", "quality", "auto_score", "qa_score"],
+      "definition": "Agent interaction quality, 0-100 from 5 dimensions of 20 each.",
+      "formula": "Resolution+Empathy+Outcome+Compliance+Effort; A 85+, B 70-84, C 55-69, D 40-54, F <40"
+    }
+  ],
+  "column_roles": {
+    "id_like": ["id", "msisdn", "phone", "number", "ticket", "case", "key", "code", "uuid"],
+    "date_like": ["date", "time", "day", "month", "created", "opened", "closed"],
+    "text_like": ["voc", "comment", "verbatim", "feedback", "note", "reason", "remark"]
+  }
+}
