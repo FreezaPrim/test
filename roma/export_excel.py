@@ -250,3 +250,328 @@ def _save(wb: Workbook, kind: str, time_q: str) -> Path:
     out = config.REPORTS_DIR / f"{kind}{tag}_{stamp}.xlsx"
     wb.save(out)
     return out
+
+
+# ============================================================
+# TNPS DASHBOARD (30+ sheets)
+# ============================================================
+
+def _write_df_to_sheet(wb: Workbook, name: str, title: str, df: "pd.DataFrame",
+                       chart: bool = False) -> None:
+    """Convert a DataFrame to rows/headers and write a branded sheet."""
+    if df is None or df.empty:
+        return
+    headers = [str(c) for c in df.columns]
+    rows = []
+    for _, row in df.iterrows():
+        r = []
+        for v in row:
+            import numpy as np
+            if hasattr(v, "item"):  # numpy scalar
+                v = v.item()
+            elif hasattr(v, "__class__") and v.__class__.__name__ in ("Timestamp",):
+                v = str(v)
+            r.append(v)
+        rows.append(r)
+    _sheet_from_table(wb, name[:31], title, headers, rows, chart=chart)
+
+
+def _write_toc_sheet(wb: Workbook, sheet_names: list) -> None:
+    """Table of Contents sheet with hyperlinks."""
+    ws = wb.create_sheet("Table_of_Contents", 1)
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells("B2:E2")
+    t = ws["B2"]
+    t.value = "Table of Contents"
+    t.font = Font(name="Arial", size=16, bold=True, color=WHITE)
+    t.fill = PatternFill("solid", fgColor=BRAND_RED)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 28
+    ws.column_dimensions["B"].width = 4
+    ws.column_dimensions["C"].width = 35
+    ws.column_dimensions["D"].width = 20
+
+    ws.cell(row=3, column=3, value="Sheet Name").font = Font(bold=True, name="Arial")
+    ws.cell(row=3, column=4, value="Navigate To").font = Font(bold=True, name="Arial")
+
+    for idx, name in enumerate(sheet_names, start=4):
+        ws.cell(row=idx, column=3, value=name).font = Font(name="Arial", size=10)
+        link_cell = ws.cell(row=idx, column=4, value=f"Go → {name}")
+        link_cell.hyperlink = f"#'{name}'!A1"
+        link_cell.font = Font(name="Arial", size=10, color="0563C1", underline="single")
+
+
+def _apply_trend_colors_sheet(ws, df: "pd.DataFrame") -> None:
+    """Color-code the Trend column in ShortCode pivot."""
+    if df is None or "Trend" not in df.columns:
+        return
+    trend_col_idx = list(df.columns).index("Trend") + 1
+    for row_idx in range(2, len(df) + 2):
+        cell = ws.cell(row=row_idx, column=trend_col_idx)
+        val = str(cell.value or "")
+        if val.startswith("↑") or "NEW" in val:
+            cell.fill = PatternFill("solid", start_color="FFD7D7")
+            cell.font = Font(name="Arial", size=10, color=BRAND_RED, bold=True)
+        elif val.startswith("↓") or "STOPPED" in val:
+            cell.fill = PatternFill("solid", start_color="D7F0D7")
+            cell.font = Font(name="Arial", size=10, color="2E8B57", bold=True)
+        else:
+            cell.fill = PatternFill("solid", start_color="F5F5F5")
+
+
+def _write_dashboard_sheet(wb: Workbook, kpi: "pd.DataFrame",
+                            daily: "pd.DataFrame") -> None:
+    """KPI cards + charts on the Dashboard sheet."""
+    ws = wb.active
+    ws.title = "Dashboard"
+    ws.sheet_view.showGridLines = False
+
+    def kv(metric):
+        if kpi is None or kpi.empty:
+            return "N/A"
+        row = kpi[kpi["Metric"] == metric]
+        return row["Value"].iloc[0] if not row.empty else "N/A"
+
+    def dv(metric):
+        if kpi is None or kpi.empty or "vs_Prev_Month" not in kpi.columns:
+            return ""
+        row = kpi[kpi["Metric"] == metric]
+        return row["vs_Prev_Month"].iloc[0] if not row.empty else ""
+
+    # Title banner
+    ws.merge_cells("B2:K3")
+    t = ws["B2"]
+    t.value = "TNPS Detractor Analytics & Forecasting Dashboard"
+    t.font = Font(name="Arial", size=20, bold=True, color=WHITE)
+    t.fill = PatternFill("solid", fgColor=DARK)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+
+    ws.merge_cells("B4:K4")
+    sub = ws["B4"]
+    sub.value = (
+        f"Period: {kv('Date Range Start')}  →  {kv('Date Range End')}"
+        f"   |   {kv('Number of Days Covered')} days covered"
+    )
+    sub.font = Font(name="Arial", size=11, italic=True, color="666666")
+    sub.alignment = Alignment(horizontal="center", vertical="center")
+
+    # KPI cards
+    headline = [
+        ("Total Surveys",     "Total Surveys Sent",    DARK),
+        ("Detractors",        "Detractors (Q1 0-6)",   BRAND_RED),
+        ("Detractor Rate %",  "Detractor Rate %",      BRAND_RED),
+        ("NPS Score",         "NPS Score",             "2E8B57"),
+        ("Completion Rate %", "Completion Rate %",     BRAND_RED),
+        ("Avg Surveys / Day", "Average Surveys / Day", DARK),
+    ]
+    row_start = 6
+    for i, (title, metric_name, color) in enumerate(headline):
+        col = 2 + (i % 3) * 3
+        r = row_start + (i // 3) * 4
+        val = kv(metric_name)
+        delta = dv(metric_name)
+
+        ws.merge_cells(start_row=r, start_column=col, end_row=r, end_column=col + 2)
+        c = ws.cell(row=r, column=col)
+        c.value = title
+        c.font = Font(name="Arial", size=10, bold=True, color=WHITE)
+        c.fill = PatternFill("solid", fgColor=color)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+        ws.merge_cells(start_row=r+1, start_column=col, end_row=r+2, end_column=col+2)
+        c = ws.cell(row=r+1, column=col)
+        c.value = val
+        c.font = Font(name="Arial", size=22, bold=True, color=DARK)
+        c.fill = PatternFill("solid", fgColor="F5F5F5")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+        if delta not in ("", "N/A"):
+            ws.merge_cells(start_row=r+3, start_column=col, end_row=r+3, end_column=col+2)
+            dc = ws.cell(row=r+3, column=col)
+            try:
+                delta_f = float(delta)
+                arrow = "▲" if delta_f > 0 else "▼"
+                d_color = BRAND_RED if delta_f > 0 else "2E8B57"
+            except (ValueError, TypeError):
+                arrow = ""; d_color = "888888"
+            dc.value = f"{arrow} {delta} vs prev month"
+            dc.font = Font(name="Arial", size=9, color=d_color, bold=True)
+            dc.alignment = Alignment(horizontal="center", vertical="center")
+
+    for col_l in ["B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        ws.column_dimensions[col_l].width = 14
+    for r in range(2, 24):
+        ws.row_dimensions[r].height = 22
+
+    # Chart data block
+    if daily is not None and not daily.empty and "Date" in daily.columns:
+        chart_start_col = 13
+        ws.cell(row=2, column=chart_start_col, value="Date")
+        ws.cell(row=2, column=chart_start_col+1, value="Surveys_Sent")
+        ws.cell(row=2, column=chart_start_col+2, value="Detractors")
+        ws.cell(row=2, column=chart_start_col+3, value="Detractor_Rate_%")
+        for i, (_, row_d) in enumerate(daily.iterrows(), start=3):
+            ws.cell(row=i, column=chart_start_col, value=str(row_d["Date"]))
+            ws.cell(row=i, column=chart_start_col+1,
+                    value=float(row_d.get("Surveys_Sent", 0)))
+            ws.cell(row=i, column=chart_start_col+2,
+                    value=float(row_d.get("Detractors", 0)))
+            ws.cell(row=i, column=chart_start_col+3,
+                    value=float(row_d.get("Detractor_Rate_%", 0)))
+        end_row = 2 + len(daily)
+        for c in range(chart_start_col, chart_start_col + 4):
+            from openpyxl.utils import get_column_letter as _gcl
+            ws.column_dimensions[_gcl(c)].width = 2
+
+        ch = LineChart()
+        ch.title = "Daily Survey Volume & Detractors"
+        ch.style = 2
+        ch.height = 10; ch.width = 24
+        data_ref = Reference(ws, min_col=chart_start_col+1, max_col=chart_start_col+2,
+                             min_row=2, max_row=end_row)
+        cats = Reference(ws, min_col=chart_start_col, min_row=3, max_row=end_row)
+        ch.add_data(data_ref, titles_from_data=True)
+        ch.set_categories(cats)
+        ws.add_chart(ch, "B25")
+
+        ch2 = LineChart()
+        ch2.title = "Daily Detractor Rate %"
+        ch2.style = 12
+        ch2.height = 10; ch2.width = 24
+        data_ref2 = Reference(ws, min_col=chart_start_col+3, max_col=chart_start_col+3,
+                              min_row=2, max_row=end_row)
+        ch2.add_data(data_ref2, titles_from_data=True)
+        ch2.set_categories(cats)
+        if ch2.series:
+            ch2.series[0].graphicalProperties.line.solidFill = BRAND_RED
+        ws.add_chart(ch2, "B47")
+
+
+def export_tnps_dashboard(conn, time_q: str = "") -> Path:
+    """Generate the full 30+ sheet TNPS dashboard.
+
+    Sheets (empty ones are skipped):
+    Dashboard, Executive_Summary, KPI_Summary, Daily_Trend, Monthly_Trend,
+    ShortCode_Daily_Pivot, ShortCode_Catalog, Queue_Catalog, Mapping_Coverage,
+    Forecast, Per_Queue_Forecast, Top10_Bottom10, NPS_Waterfall,
+    SLA_Breach_Heatmap, By_OwnerTeam, By_Substatus, By_CallType, By_ProdType,
+    Channel_Comparison, FCR_Impact, By_Reachability, By_Region,
+    Heatmap_Lev3_x_Lev4, Hour_Pattern, DayOfWeek_Pattern, Toxic_Combos,
+    Velocity_Alerts, Cohort_Analysis, Repeat_Detractors, Duplicate_Surveys,
+    Agent_Peer_Benchmark, Agent_Ranking, Q2_Attitude_vs_TNPS,
+    Table_of_Contents
+    """
+    import pandas as pd
+    from . import tnps_analytics as ta
+    from . import forecast as fc
+
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        raise ValueError("No TNPS data found in the database. Load survey files first.")
+
+    def _safe(fn, *args, **kwargs):
+        try:
+            result = fn(*args, **kwargs)
+            return result if result is not None else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+    # Build all analytics
+    kpi = _safe(ta.build_kpi_summary, df, cols)
+    daily = _safe(ta.build_daily_trend, df, cols)
+    monthly = _safe(ta.build_monthly_trend, df, cols)
+    sc_pivot = _safe(ta.build_shortcode_daily_pivot, df, cols)
+    sc_catalog = _safe(ta.build_shortcode_catalog, df, cols)
+    q_catalog = _safe(ta.build_queue_catalog, df, cols)
+    map_cov = _safe(ta.build_mapping_coverage, df, cols)
+    duplicates = _safe(ta.build_duplicate_surveys, df, cols)
+    top_bottom = _safe(ta.build_top_bottom, df, cols)
+    waterfall = _safe(ta.build_nps_waterfall, df, cols)
+    sla_breach = _safe(ta.build_sla_breach_heatmap, df, cols)
+    heatmap = _safe(ta.build_lev3_lev4_heatmap, df, cols)
+    hour_p = _safe(ta.build_hour_pattern, df, cols)
+    dow_p = _safe(ta.build_dow_pattern, df, cols)
+    repeats = _safe(ta.build_repeat_detractors, df, cols)
+    cohort = _safe(ta.build_cohort_analysis, df, cols)
+    toxic = _safe(ta.build_toxic_combos, df, cols)
+    velocity = _safe(ta.build_velocity_alerts, df, cols)
+    peer_bench = _safe(ta.build_agent_peer_benchmark, df, cols)
+    agent_rk = _safe(ta.build_agent_ranking, df, cols)
+    channel_cmp = _safe(ta.build_channel_comparison, df, cols)
+    fcr_impact = _safe(ta.build_fcr_impact, df, cols)
+
+    # Forecasting
+    forecast_df = _safe(fc.build_forecast, daily, 30)
+    queue_fc = _safe(fc.build_per_queue_forecast, df, cols, daily, 30, 5)
+    exec_summary = _safe(ta.build_executive_summary, df, cols, kpi, daily, forecast_df)
+
+    # Dimension breakdowns
+    by_owner_team = _safe(ta.breakdown_by, df, cols.get("owner_team") or "", cols) if cols.get("owner_team") else pd.DataFrame()
+    by_substatus = _safe(ta.breakdown_by, df, cols.get("substatus") or "", cols) if cols.get("substatus") else pd.DataFrame()
+    by_call_type = _safe(ta.breakdown_by, df, cols.get("call_type") or "", cols) if cols.get("call_type") else pd.DataFrame()
+    by_prod_type = _safe(ta.breakdown_by, df, cols.get("prod_type") or "", cols) if cols.get("prod_type") else pd.DataFrame()
+    by_reachability = _safe(ta.breakdown_by, df, cols.get("reachability") or "", cols) if cols.get("reachability") else pd.DataFrame()
+    by_lev1 = _safe(ta.breakdown_by, df, cols.get("lev1") or "", cols) if cols.get("lev1") else pd.DataFrame()
+    by_lev2 = _safe(ta.breakdown_by, df, cols.get("lev2") or "", cols) if cols.get("lev2") else pd.DataFrame()
+    by_lev3 = _safe(ta.breakdown_by, df, cols.get("lev3") or "", cols) if cols.get("lev3") else pd.DataFrame()
+    by_lev4 = _safe(ta.breakdown_by, df, cols.get("lev4") or "", cols) if cols.get("lev4") else pd.DataFrame()
+    by_site = _safe(ta.breakdown_by, df, cols.get("site") or "", cols) if cols.get("site") else pd.DataFrame()
+
+    # Build workbook
+    wb = Workbook()
+
+    # Dashboard sheet (active sheet)
+    _write_dashboard_sheet(wb, kpi, daily)
+    created_sheets = ["Dashboard"]
+
+    _SHEETS = [
+        ("Executive_Summary",   exec_summary,   "Executive Summary"),
+        ("KPI_Summary",         kpi,            "KPI Summary"),
+        ("Daily_Trend",         daily,          "Daily Trend"),
+        ("Monthly_Trend",       monthly,        "Monthly Trend"),
+        ("ShortCode_Daily_Pivot", sc_pivot,     "Short Code × Day Pivot"),
+        ("ShortCode_Catalog",   sc_catalog,     "Short Code Catalog"),
+        ("Queue_Catalog",       q_catalog,      "Agent Queue Catalog"),
+        ("Mapping_Coverage",    map_cov,        "Mapping Coverage Report"),
+        ("Forecast",            forecast_df,    "Forecast (Holt-Winters)"),
+        ("Per_Queue_Forecast",  queue_fc,       "Per-Queue Forecast"),
+        ("Top10_Bottom10",      top_bottom,     "Top 10 / Bottom 10"),
+        ("NPS_Waterfall",       waterfall,      "NPS Waterfall"),
+        ("SLA_Breach_Heatmap",  sla_breach,     "SLA Breach Heatmap"),
+        ("By_OwnerTeam",        by_owner_team,  "Detractors by Owner Team"),
+        ("By_Substatus",        by_substatus,   "Detractors by Sub-Status"),
+        ("By_CallType",         by_call_type,   "Detractors by Call Type"),
+        ("By_ProdType",         by_prod_type,   "Detractors by Product Type"),
+        ("Channel_Comparison",  channel_cmp,    "Channel Comparison"),
+        ("FCR_Impact",          fcr_impact,     "FCR Impact"),
+        ("By_Reachability",     by_reachability, "Detractors by Reachability"),
+        ("By_Lev1",             by_lev1,        "By Mapping Lev 1"),
+        ("By_Lev2",             by_lev2,        "By Mapping Lev 2"),
+        ("By_Lev3",             by_lev3,        "By Mapping Lev 3"),
+        ("By_Lev4",             by_lev4,        "By Mapping Lev 4"),
+        ("By_Site",             by_site,        "By Site"),
+        ("Heatmap_Lev3_x_Lev4", heatmap,       "Heatmap Lev3 × Lev4"),
+        ("Hour_Pattern",        hour_p,         "Hour of Day Pattern"),
+        ("DayOfWeek_Pattern",   dow_p,          "Day of Week Pattern"),
+        ("Toxic_Combos",        toxic,          "Toxic Dimension Combos"),
+        ("Velocity_Alerts",     velocity,       "Velocity Alerts (WoW)"),
+        ("Cohort_Analysis",     cohort,         "Cohort Analysis"),
+        ("Repeat_Detractors",   repeats,        "Repeat Detractors"),
+        ("Duplicate_Surveys",   duplicates,     "Duplicate Surveys (24h)"),
+        ("Agent_Peer_Benchmark", peer_bench,    "Agent Peer Benchmarking"),
+        ("Agent_Ranking",       agent_rk,       "Agent Ranking"),
+    ]
+
+    for sname, sdf, stitle in _SHEETS:
+        if sdf is None or (hasattr(sdf, "empty") and sdf.empty):
+            continue
+        _write_df_to_sheet(wb, sname, stitle, sdf)
+        # Special: apply trend colors to ShortCode pivot
+        if sname == "ShortCode_Daily_Pivot" and sname[:31] in wb.sheetnames:
+            _apply_trend_colors_sheet(wb[sname[:31]], sdf)
+        created_sheets.append(sname[:31])
+
+    # Table of Contents (second sheet after Dashboard)
+    _write_toc_sheet(wb, created_sheets)
+
+    return _save(wb, "tnps_dashboard", time_q)

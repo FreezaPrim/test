@@ -542,6 +542,49 @@ def cmd_reset(args) -> int:
     return 0
 
 
+def cmd_tnps(args) -> int:
+    """Generate the full TNPS analytics dashboard (Excel)."""
+    from . import export_excel as ex
+    conn = database.connect()
+    if not database.list_tables(conn):
+        _say("No data loaded yet. Add files first:  roma add <files>")
+        return 1
+    when = " ".join(args.when) if args.when else ""
+    _say("Building TNPS dashboard (this may take a moment)...")
+    try:
+        out = ex.export_tnps_dashboard(conn, when)
+        _say(f"Dashboard saved: {out}")
+    except Exception as exc:  # noqa: BLE001
+        _say(f"Error: {exc}")
+        return 1
+    return 0
+
+
+def cmd_forecast(args) -> int:
+    """Run Holt-Winters forecast on detractor trends."""
+    from . import forecast as fc, tnps_analytics as ta
+    conn = database.connect()
+    if not database.list_tables(conn):
+        _say("No data loaded yet. Add files first:  roma add <files>")
+        return 1
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        _say("No TNPS data found.")
+        return 1
+    daily = ta.build_daily_trend(df, cols)
+    result = fc.build_forecast(daily, horizon=args.horizon)
+    if result.empty:
+        _say("Not enough data to forecast.")
+        return 1
+    _say(f"Forecast for next {args.horizon} days:")
+    for _, row in result.head(7).iterrows():
+        _say(f"  {row['Date']}: ~{row.get('Forecast_Detractor_Rate_%', 0):.1f}% detractor rate")
+    breach = result.attrs.get("breach_date")
+    if breach:
+        _say(f"  Warning: Projected breach of target detractor rate: {breach}")
+    return 0
+
+
 # --------------------------------- parser ---------------------------------- #
 
 def build_parser() -> argparse.ArgumentParser:
@@ -627,6 +670,14 @@ def build_parser() -> argparse.ArgumentParser:
     z = sub.add_parser("reset", help="Delete all loaded data.")
     z.add_argument("--yes", action="store_true", help="Skip the confirmation prompt.")
     z.set_defaults(func=cmd_reset)
+
+    tn = sub.add_parser("tnps", help="Generate full TNPS analytics dashboard (Excel).")
+    tn.add_argument("when", nargs="*", help="Optional time window, e.g. April, Q1.")
+    tn.set_defaults(func=cmd_tnps)
+
+    fr = sub.add_parser("forecast", help="Forecast detractor trends (Holt-Winters).")
+    fr.add_argument("--horizon", type=int, default=30, help="Days to forecast (default 30).")
+    fr.set_defaults(func=cmd_forecast)
 
     return p
 

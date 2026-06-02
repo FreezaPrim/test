@@ -320,6 +320,13 @@ def _answer_export(conn, q: str) -> str | None:
 
     if fmt == "excel":
         from . import export_excel as ex, timefilter
+        # TNPS dashboard / full report
+        if re.search(r"tnps.dashboard|full.report|full dashboard|dashboard", q):
+            try:
+                out = ex.export_tnps_dashboard(conn, q)
+                return f"TNPS dashboard saved:\n  {out}"
+            except Exception:
+                pass
         tf = None
         for t in database.list_tables(conn):
             dcol = timefilter.find_date_column([c["name"] for c in t["columns"]])
@@ -348,6 +355,57 @@ def _answer_export(conn, q: str) -> str | None:
         return (f"That format needs the '{lib}' library, which isn't installed. "
                 f"Re-run setup_windows.bat, or install it, then try again.")
     return f"Exported an e&-branded {label}:\n  {out}"
+
+
+def _answer_cohort(conn, q: str) -> str | None:
+    if not re.search(r"cohort|recovery|came back|returned|retained|استرداد|تعافي", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    result = ta.build_cohort_analysis(df, cols)
+    if result.empty:
+        return "No cohort data (need MSISDN column + multiple months)."
+    lines = ["Cohort analysis (detractor recovery by month):"]
+    for _, row in result.head(6).iterrows():
+        lines.append(f"  - Cohort {row.get('Cohort_Month (First_Detractor)', '?')}: "
+                     f"Recovery {row.get('Recovery_Rate_%', 0):.1f}%")
+    return "\n".join(lines)
+
+
+def _answer_velocity(conn, q: str) -> str | None:
+    if not re.search(r"velocity|spike|sudden|week.over.week|wow|jumped|تسارع|قفز", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    result = ta.build_velocity_alerts(df, cols)
+    if result.empty:
+        return "No velocity alerts detected."
+    lines = ["Velocity alerts (week-over-week spikes):"]
+    for _, row in result.head(5).iterrows():
+        lines.append(f"  - {row.get('AGENT_QUEUE', '?')} week {row.get('Week', '?')}: "
+                     f"{row.get('Alert', '?')}")
+    return "\n".join(lines)
+
+
+def _answer_toxic_combos(conn, q: str) -> str | None:
+    if not re.search(r"toxic|combo|root.cause|combination|worst mix|أسوأ|سام", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    result = ta.build_toxic_combos(df, cols)
+    if result.empty:
+        return "No toxic combos found."
+    lines = ["Top toxic dimension combos:"]
+    for _, row in result.head(5).iterrows():
+        lines.append(f"  - {row.get('Combo', '?')}: {row.get('Detractor_Rate_%', 0):.1f}% detractor rate "
+                     f"({int(row.get('Detractors', 0))} detractors / {int(row.get('Surveys', 0))} surveys)")
+    return "\n".join(lines)
 
 
 def _answer_stats(conn, q: str) -> str | None:
@@ -443,7 +501,8 @@ _BUILDERS = [_answer_export, _answer_mapping, _answer_assumptions, _answer_stats
              _answer_alerts, _answer_identity,
              _answer_summary, _answer_detractors,
              _answer_drivers, _answer_segments, _answer_trend, _answer_anomalies,
-             _answer_repeat, _answer_top_values, _answer_metric_by_dim, _answer_kpis]
+             _answer_repeat, _answer_top_values, _answer_metric_by_dim, _answer_kpis,
+             _answer_cohort, _answer_velocity, _answer_toxic_combos]
 
 
 def knowledge_text(conn) -> str:
