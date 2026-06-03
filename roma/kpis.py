@@ -34,16 +34,30 @@ def _nps(df: pd.DataFrame, table: str) -> list[dict]:
         s = pd.to_numeric(df[col], errors="coerce").dropna()
         if len(s) < 5 or s.min() < 0 or s.max() > 10:
             continue
-        promoters = (s >= 9).mean() * 100
-        detractors = (s <= 6).mean() * 100
-        nps = promoters - detractors
-        out.append({"name": f"tNPS/NPS ({col})", "table": table,
-                    "value": f"{nps:.0f}",
-                    "detail": f"{promoters:.0f}% promoters - {detractors:.0f}% detractors, "
-                              f"n={len(s)}"})
-        out.append({"name": f"Detractors ({col})", "table": table,
-                    "value": f"{(s <= 6).sum()}",
-                    "detail": f"{detractors:.0f}% of {len(s)} respondents (score 0-6)"})
+        promoters_pct = (s >= 9).mean() * 100
+        passives_pct  = ((s >= 7) & (s <= 8)).mean() * 100
+        detractors_pct = (s <= 6).mean() * 100
+        nps = promoters_pct - detractors_pct
+        n = len(s)
+        out.append({
+            "name": f"tNPS ({col})", "table": table,
+            "value": f"{nps:+.0f}",
+            "detail": (f"▲ {promoters_pct:.0f}% promoters  "
+                       f"○ {passives_pct:.0f}% passives  "
+                       f"▼ {detractors_pct:.0f}% detractors  "
+                       f"n={n}")})
+        out.append({
+            "name": f"Promoters ({col})", "table": table,
+            "value": f"{promoters_pct:.0f}%",
+            "detail": f"{int((s >= 9).sum())} respondents scored 9–10"})
+        out.append({
+            "name": f"Passives ({col})", "table": table,
+            "value": f"{passives_pct:.0f}%",
+            "detail": f"{int(((s >= 7) & (s <= 8)).sum())} respondents scored 7–8"})
+        out.append({
+            "name": f"Detractors ({col})", "table": table,
+            "value": f"{detractors_pct:.0f}%  ({int((s <= 6).sum())})",
+            "detail": f"scored 0–6  |  n={n}"})
         break  # one NPS-like column per table is enough
     return out
 

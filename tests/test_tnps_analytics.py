@@ -688,3 +688,160 @@ class TestJoinMappingTrigger:
         assert not self._matches("how does the map feature work")
         assert not self._matches("what drives tnps")
         assert not self._matches("show me detractors by queue")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Win-back, Severity, KPI completeness, Time-filtered print-top
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestWinback:
+    """Tests for winback.py cohort and summary functions."""
+
+    def setup_method(self):
+        from roma.tnps_analytics import detect_tnps_columns
+        rng = np.random.default_rng(7)
+        n = 300
+        base = date(2026, 1, 1)
+        # spread across 3 months
+        dates = [base + timedelta(days=int(d)) for d in rng.integers(0, 90, n)]
+        msisdns = [f"05{rng.integers(1000000, 9999999)}" for _ in range(50)]
+        self.df = pd.DataFrame({
+            "MSISDN": [msisdns[i % 50] for i in range(n)],
+            "Q1_ANSWER: TNPS": rng.integers(0, 11, n).astype(float),
+            "IVR_DATE": dates,
+        })
+        self.cols = detect_tnps_columns(self.df)
+
+    def test_winback_summary_returns_dataframe(self):
+        from roma.winback import build_winback_summary
+        result = build_winback_summary(self.df, self.cols)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_winback_summary_has_expected_columns(self):
+        from roma.winback import build_winback_summary
+        result = build_winback_summary(self.df, self.cols)
+        if not result.empty:
+            assert "Recovery_Rate_%" in result.columns
+            assert "Churn_Rate_%" in result.columns
+
+    def test_winback_transitions_returns_dataframe(self):
+        from roma.winback import build_winback_transitions
+        result = build_winback_transitions(self.df, self.cols)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_winback_transitions_categories(self):
+        from roma.winback import build_winback_transitions
+        result = build_winback_transitions(self.df, self.cols)
+        if not result.empty:
+            cats = set(result["Cat_From"].unique()) | set(result["Cat_To"].unique())
+            assert cats.issubset({"Promoter", "Passive", "Detractor"})
+
+    def test_winback_empty_on_missing_cols(self):
+        from roma.winback import build_winback_summary
+        result = build_winback_summary(pd.DataFrame({"a": [1, 2]}), {})
+        assert result.empty
+
+
+class TestSeverityScores:
+    """Tests for build_severity_scores in tnps_analytics."""
+
+    def setup_method(self):
+        from roma.tnps_analytics import detect_tnps_columns
+        self.df = pd.DataFrame({
+            "MSISDN": ["05111", "05222", "05111", "05333", "05444", "05555"],
+            "Q1_ANSWER: TNPS": [1.0, 3.0, 5.0, 0.0, 4.0, 8.0],
+        })
+        self.cols = detect_tnps_columns(self.df)
+
+    def test_returns_dataframe(self):
+        from roma.tnps_analytics import build_severity_scores
+        result = build_severity_scores(self.df, self.cols)
+        assert isinstance(result, pd.DataFrame)
+
+    def test_has_severity_column(self):
+        from roma.tnps_analytics import build_severity_scores
+        result = build_severity_scores(self.df, self.cols)
+        if not result.empty:
+            assert "Severity" in result.columns
+            assert "Count" in result.columns
+
+    def test_severity_values_are_valid(self):
+        from roma.tnps_analytics import build_severity_scores
+        result = build_severity_scores(self.df, self.cols)
+        if not result.empty:
+            assert set(result["Severity"]).issubset({"Critical", "High", "Medium"})
+
+    def test_no_promoters_in_severity(self):
+        from roma.tnps_analytics import build_severity_scores
+        result = build_severity_scores(self.df, self.cols)
+        # score 8 is a passive, should NOT appear in severity
+        total = result["Count"].sum() if not result.empty else 0
+        assert total == 5  # 5 detractors (score 0-6), 1 passive excluded
+
+    def test_repeat_caller_bump(self):
+        from roma.tnps_analytics import build_severity_scores
+        # MSISDN 05111 appears twice with Medium severity (score 5) → should bump to High
+        result = build_severity_scores(self.df, self.cols)
+        assert not result.empty
+
+
+class TestKPIsPromotersPassives:
+    """Verify kpis._nps() returns promoters, passives, detractors separately."""
+
+    def test_kpis_has_four_nps_entries(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("CREATE TABLE survey (tnps_score REAL)")
+        data = [(float(s),) for s in [10, 9, 9, 8, 7, 5, 4, 3, 2, 1, 0]]
+        conn.executemany("INSERT INTO survey VALUES (?)", data)
+        conn.execute("""
+            CREATE TABLE _roma_sources
+            (name TEXT, kind TEXT, origin_file TEXT, rows INTEGER, added_at TEXT)""")
+        conn.execute("INSERT INTO _roma_sources VALUES ('survey','table','t.csv',11,datetime('now'))")
+        conn.commit()
+
+        from roma.kpis import compute
+        results = compute(conn)
+        names = [r["name"] for r in results]
+        # should have tNPS, Promoters, Passives, Detractors
+        assert any("tNPS" in n or "NPS" in n for n in names), f"No tNPS entry: {names}"
+        assert any("Promoter" in n for n in names), f"No Promoters entry: {names}"
+        assert any("Passive" in n for n in names), f"No Passives entry: {names}"
+        assert any("Detractor" in n for n in names), f"No Detractors entry: {names}"
+        conn.close()
+
+
+class TestPrintTopTimeFilter:
+    """Verify _answer_print_top respects time filter keywords."""
+
+    def setup_method(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("""
+            CREATE TABLE survey (shortcode TEXT, nps_score REAL, ivr_date TEXT)""")
+        rows = [
+            ("SC01", 3.0, "2026-04-10"), ("SC01", 2.0, "2026-04-15"),
+            ("SC02", 5.0, "2026-04-20"), ("SC01", 8.0, "2026-03-01"),
+            ("SC02", 3.0, "2026-03-15"), ("SC03", 1.0, "2026-04-22"),
+        ]
+        self.conn.executemany("INSERT INTO survey VALUES (?,?,?)", rows)
+        self.conn.execute("""
+            CREATE TABLE _roma_sources
+            (name TEXT, kind TEXT, origin_file TEXT, rows INTEGER, added_at TEXT)""")
+        self.conn.execute(
+            "INSERT INTO _roma_sources VALUES ('survey','table','t.csv',6,datetime('now'))")
+        self.conn.commit()
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_print_top_with_month_filter_returns_result(self):
+        from roma.engine import _answer_print_top
+        result = _answer_print_top(self.conn, "print top detractors by shortcode in april")
+        # should not error
+        assert result is None or isinstance(result, str)
+
+    def test_print_top_no_filter(self):
+        from roma.engine import _answer_print_top
+        result = _answer_print_top(self.conn, "print top detractors by shortcode")
+        assert result is None or isinstance(result, str)

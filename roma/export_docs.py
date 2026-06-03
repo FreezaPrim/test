@@ -254,3 +254,239 @@ def export_pdf(conn, time_q: str = "") -> Path:
 
     doc.build(flow)
     return out
+
+
+# ─────────────────────────── TNPS PowerPoint ────────────────────────────── #
+
+def export_tnps_pptx(conn, time_q: str = "") -> Path:
+    """Full TNPS-focused PowerPoint deck with e& branding (10 slides)."""
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN
+
+    from . import tnps_analytics as ta, winback as wb, kpis as kp
+
+    red   = RGBColor.from_string(BRAND_RED)
+    dark  = RGBColor.from_string(DARK)
+    white = RGBColor.from_string("FFFFFF")
+    grey  = RGBColor.from_string("F2F2F2")
+    amber = RGBColor.from_string("FFA500")
+
+    prs = Presentation()
+    prs.slide_width  = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    blank = prs.slide_layouts[6]
+
+    # ── helpers ────────────────────────────────────────────────────────── #
+    def _bar(slide, height=0.22):
+        box = slide.shapes.add_shape(
+            1, 0, 0, prs.slide_width, Inches(height))
+        box.fill.solid(); box.fill.fore_color.rgb = red
+        box.line.fill.background()
+
+    def _tb(slide, left, top, width, height, text, size, *,
+            bold=False, color=dark, align=PP_ALIGN.LEFT, italic=False):
+        tb = slide.shapes.add_textbox(
+            Inches(left), Inches(top), Inches(width), Inches(height))
+        tf = tb.text_frame; tf.word_wrap = True
+        p = tf.paragraphs[0]; p.alignment = align
+        run = p.add_run(); run.text = str(text)
+        run.font.size = Pt(size); run.font.bold = bold
+        run.font.italic = italic
+        run.font.color.rgb = color; run.font.name = "Arial"
+        return tb
+
+    def _kpi_box(slide, left, top, label, value, sub=""):
+        box = slide.shapes.add_shape(
+            1, Inches(left), Inches(top), Inches(2.8), Inches(1.6))
+        box.fill.solid(); box.fill.fore_color.rgb = grey
+        box.line.color.rgb = RGBColor.from_string("DDDDDD")
+        _tb(slide, left + 0.12, top + 0.08, 2.6, 0.4, label, 11, color=dark)
+        _tb(slide, left + 0.12, top + 0.45, 2.6, 0.7, value, 28,
+            bold=True, color=red, align=PP_ALIGN.LEFT)
+        if sub:
+            _tb(slide, left + 0.12, top + 1.1, 2.6, 0.4, sub, 9,
+                italic=True, color=dark)
+
+    def _table_on_slide(slide, top_in, headers, rows, max_rows=15):
+        rows = rows[:max_rows]
+        if not rows:
+            return
+        n_cols = len(headers)
+        col_w  = 12.0 / n_cols
+        # header row
+        for j, h in enumerate(headers):
+            box = slide.shapes.add_shape(
+                1, Inches(0.6 + j * col_w), Inches(top_in),
+                Inches(col_w), Inches(0.38))
+            box.fill.solid(); box.fill.fore_color.rgb = dark
+            box.line.fill.background()
+            _tb(slide, 0.6 + j * col_w + 0.05, top_in + 0.04,
+                col_w - 0.1, 0.32, h, 10, bold=True, color=white)
+        # data rows
+        for i, row in enumerate(rows):
+            fill_rgb = grey if i % 2 == 0 else white
+            for j, cell in enumerate(row):
+                box = slide.shapes.add_shape(
+                    1, Inches(0.6 + j * col_w), Inches(top_in + 0.38 + i * 0.36),
+                    Inches(col_w), Inches(0.36))
+                box.fill.solid(); box.fill.fore_color.rgb = fill_rgb
+                box.line.color.rgb = RGBColor.from_string("EEEEEE")
+                _tb(slide, 0.6 + j * col_w + 0.05,
+                    top_in + 0.38 + i * 0.36 + 0.04,
+                    col_w - 0.1, 0.3, str(cell), 9, color=dark)
+
+    def _heading(slide, text, sub=""):
+        _bar(slide)
+        _tb(slide, 0.6, 0.38, 12.0, 0.8, text, 28, bold=True, color=dark)
+        if sub:
+            _tb(slide, 0.6, 1.05, 12.0, 0.4, sub, 13, italic=True, color=dark)
+
+    stamp = f"e& Consumer  |  {datetime.now():%B %Y}  |  prepared by Roma"
+
+    # load TNPS data once
+    df, cols = ta.load_tnps_df(conn)
+
+    # ── Slide 1: Title ─────────────────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    bg = s.background.fill; bg.solid(); bg.fore_color.rgb = dark
+    _tb(s, 0.8, 2.2, 11.7, 1.4, "tNPS Performance Report",
+        44, bold=True, color=white)
+    _tb(s, 0.8, 3.75, 11.7, 0.7, stamp, 18, italic=True, color=white)
+    _bar(s, height=0.18)
+
+    # ── Slide 2: KPI Summary ───────────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "KPI Summary", stamp)
+    kpi_list = kp.compute(conn)
+    kpi_map = {k["name"]: (k["value"], k.get("detail","")) for k in kpi_list}
+    positions = [(0.5, 2.2), (3.5, 2.2), (6.5, 2.2), (9.8, 2.2),
+                 (0.5, 4.1), (3.5, 4.1), (6.5, 4.1), (9.8, 4.1)]
+    for i, (name, (val, det)) in enumerate(list(kpi_map.items())[:8]):
+        lx, ty = positions[i]
+        short = name.split("(")[0].strip()
+        sub = det[:55] + "…" if len(det) > 55 else det
+        _kpi_box(s, lx, ty, short, val, sub)
+
+    # ── Slide 3: Detractor Trend ───────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "Monthly Detractor Rate Trend")
+    if not df.empty:
+        monthly = ta.build_monthly_trend(df, cols)
+        if not monthly.empty:
+            mcol = next((c for c in monthly.columns
+                         if "det" in c.lower() and "rate" in c.lower()), None)
+            dcol = next((c for c in monthly.columns if "date" in c.lower() or "month" in c.lower()), None)
+            if mcol and dcol:
+                rows = [[str(r[dcol])[:7], f"{r[mcol]:.1f}%"]
+                        for _, r in monthly.iterrows()]
+                _table_on_slide(s, 1.6, ["Month", "Detractor Rate %"], rows, 10)
+
+    # ── Slide 4: Top Detractors by Short Code ─────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "Top Detractors by Short Code")
+    if not df.empty:
+        sc_col = cols.get("short_code")
+        nps_col = cols.get("nps")
+        if sc_col and nps_col and sc_col in df.columns:
+            top_sc = (df[df[nps_col].apply(pd.to_numeric, args=("coerce",)) <= 6]
+                      .groupby(sc_col).size()
+                      .nlargest(12).reset_index())
+            top_sc.columns = ["Short Code", "Detractors"]
+            _table_on_slide(s, 1.6, list(top_sc.columns),
+                            top_sc.values.tolist(), 12)
+
+    # ── Slide 5: Top Detractors by Queue ──────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "Top Detractors by Agent Queue")
+    if not df.empty:
+        aq_col = cols.get("agent_queue")
+        nps_col = cols.get("nps")
+        if aq_col and nps_col and aq_col in df.columns:
+            top_q = (df[pd.to_numeric(df[nps_col], errors="coerce") <= 6]
+                     .groupby(aq_col).size()
+                     .nlargest(12).reset_index())
+            top_q.columns = ["Agent Queue", "Detractors"]
+            _table_on_slide(s, 1.6, list(top_q.columns),
+                            top_q.values.tolist(), 12)
+
+    # ── Slide 6: NPS Waterfall ─────────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "NPS Monthly Waterfall")
+    if not df.empty:
+        wf = ta.build_nps_waterfall(df, cols)
+        if not wf.empty:
+            cols_show = [c for c in ["Month","NPS_Score","Promoters","Detractors",
+                                      "Net_Gain","Detractor_Rate_%"] if c in wf.columns]
+            rows = [[str(r[c]) for c in cols_show] for _, r in wf.iterrows()]
+            _table_on_slide(s, 1.6, cols_show, rows, 10)
+
+    # ── Slide 7: Forecast ─────────────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "30-Day Detractor Rate Forecast (Holt-Winters)")
+    if not df.empty:
+        from . import forecast as fc
+        daily = ta.build_daily_trend(df, cols)
+        if not daily.empty:
+            try:
+                fcast = fc.build_forecast(daily, horizon=30)
+                if not fcast.empty:
+                    fcol = next((c for c in fcast.columns if "forecast" in c.lower()
+                                 and "lower" not in c.lower() and "upper" not in c.lower()), None)
+                    lcol = next((c for c in fcast.columns if "lower" in c.lower()), None)
+                    ucol = next((c for c in fcast.columns if "upper" in c.lower()), None)
+                    dc   = "Date" if "Date" in fcast.columns else fcast.columns[0]
+                    rows_fc = []
+                    for _, r in fcast.iterrows():
+                        rows_fc.append([str(r[dc])[:10],
+                                        f"{r[fcol]:.1f}%" if fcol else "",
+                                        f"{r[lcol]:.1f}%–{r[ucol]:.1f}%" if lcol and ucol else ""])
+                    hdrs = ["Date", "Forecast Det.%", "Range"]
+                    _table_on_slide(s, 1.6, hdrs, rows_fc, 12)
+                    breach = fcast.attrs.get("breach_date", "")
+                    if breach and breach != "No breach in horizon":
+                        _tb(s, 0.6, 6.6, 12, 0.5,
+                            f"⚠  Projected 40% target breach: {breach}",
+                            13, color=amber, bold=True)
+            except Exception:
+                pass
+
+    # ── Slide 8: Toxic Combos ─────────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "Toxic Short Code + Queue Combos")
+    if not df.empty:
+        tox = ta.build_toxic_combos(df, cols)
+        if not tox.empty:
+            show_cols = [c for c in tox.columns if c not in ("_ord",)][:5]
+            rows = [[str(r[c]) for c in show_cols] for _, r in tox.head(12).iterrows()]
+            _table_on_slide(s, 1.6, show_cols, rows, 12)
+
+    # ── Slide 9: Agent Ranking ─────────────────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "Agent Detractor Ranking & Peer Benchmark")
+    if not df.empty:
+        ar = ta.build_agent_ranking(df, cols)
+        if not ar.empty:
+            show_cols = [c for c in ar.columns][:5]
+            rows = [[str(r[c]) for c in show_cols] for _, r in ar.head(12).iterrows()]
+            _table_on_slide(s, 1.6, show_cols, rows, 12)
+
+    # ── Slide 10: Win-Back Recovery Rate ──────────────────────────────── #
+    s = prs.slides.add_slide(blank)
+    _heading(s, "Churn & Win-Back Recovery Rate")
+    if not df.empty:
+        wbs = wb.build_winback_summary(df, cols)
+        if not wbs.empty:
+            show_cols = [c for c in wbs.columns]
+            rows = [[str(r[c]) for c in show_cols] for _, r in wbs.iterrows()]
+            _table_on_slide(s, 1.6, show_cols, rows, 10)
+        else:
+            _tb(s, 0.6, 3.0, 12, 1,
+                "Not enough multi-month MSISDN data to compute recovery rate.\n"
+                "Load 2+ months of dated survey data with customer IDs to enable this.",
+                14, italic=True, color=dark)
+
+    out = _stamp("tnps_presentation", "pptx")
+    prs.save(out)
+    return out

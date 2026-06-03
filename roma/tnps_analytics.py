@@ -1129,3 +1129,61 @@ def build_executive_summary(df: pd.DataFrame, cols: dict, kpi: pd.DataFrame,
         ("Recommendation", "Prioritise top driver queue and escalate toxic short codes to product team."),
     ]
     return pd.DataFrame(lines, columns=["Summary_Item", "Detail"])
+
+
+# ============================================================
+# SEVERITY SCORING
+# ============================================================
+
+@_safe_return
+def build_severity_scores(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
+    """Classify each detractor row as Critical / High / Medium severity.
+
+    Severity is based on NPS score (lower = worse) then bumped up one level
+    if the caller's MSISDN appears multiple times (repeat caller).
+    Returns a summary counts DataFrame.
+    """
+    nps_col = cols.get("nps")
+    msisdn_col = cols.get("msisdn")
+    if not nps_col or nps_col not in df.columns:
+        return pd.DataFrame()
+
+    work = df.copy()
+    score = pd.to_numeric(work[nps_col], errors="coerce")
+
+    def _base(v):
+        if pd.isna(v) or v > 6:
+            return None
+        if v <= 2:
+            return "Critical"
+        if v <= 4:
+            return "High"
+        return "Medium"
+
+    work["Severity"] = score.map(_base)
+    det = work[work["Severity"].notna()].copy()
+    if det.empty:
+        return pd.DataFrame()
+
+    # repeat-caller bump: MSISDN appears >1 time → promote severity one step
+    if msisdn_col and msisdn_col in det.columns:
+        step = {"Medium": "High", "High": "Critical", "Critical": "Critical"}
+        repeat_ids = set(det[msisdn_col].value_counts()[lambda x: x > 1].index)
+        det["Severity"] = det.apply(
+            lambda r: step[r["Severity"]] if r[msisdn_col] in repeat_ids else r["Severity"],
+            axis=1,
+        )
+
+    order = {"Critical": 0, "High": 1, "Medium": 2}
+    summary = (det["Severity"].value_counts()
+                              .rename_axis("Severity")
+                              .reset_index(name="Count"))
+    summary["_ord"] = summary["Severity"].map(order)
+    summary = summary.sort_values("_ord").drop(columns="_ord").reset_index(drop=True)
+    summary["Pct_%"] = (summary["Count"] / len(det) * 100).round(1)
+    summary["Meaning"] = summary["Severity"].map({
+        "Critical": "Score 0–2  (may have repeat-caller bump)",
+        "High":     "Score 3–4  (may have repeat-caller bump)",
+        "Medium":   "Score 5–6",
+    })
+    return summary

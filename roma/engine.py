@@ -19,6 +19,14 @@ import pandas as pd
 
 from . import analyst, database, knowledge, kpis, localchat
 
+# ── Session state ──────────────────────────────────────────────────────────
+# Lightweight context dict: updated by builders that produce results so that
+# follow-up queries ("now filter by April", "same but for queue") can use it.
+_SESSION: dict = {}
+
+# Chat history for /save — list of (question, answer) pairs this session.
+_CHAT_LOG: list[tuple[str, str]] = []
+
 
 def _answer_kpis(conn, q: str) -> str | None:
     if not re.search(r"kpi|tnps|nps|csat|detractor|reach|contact|promoter|score card|scorecard", q):
@@ -151,34 +159,38 @@ def _answer_identity(conn, q: str) -> str | None:
                      r"what can you do|what do you do|help me|capabilities", q):
         return None
     name = knowledge.welcome_name()
-    return (f"I'm Roma - {name}'s senior Customer Experience analyst, running "
-            f"fully on this machine. I know your e& CX work: tNPS/NPS, CSAT, FCR, "
-            f"detractors, Contact & Reach rates, win-back, severity and QA scoring, "
-            f"and I apply your own formulas.\n"
-            f"Ask me things like:\n"
-            f"  --- TNPS DASHBOARD ---\n"
-            f"  - tnps dashboard / run tnps / full report  (30-sheet Excel)\n"
-            f"  - forecast / predict next 30 days\n"
-            f"  - toxic combos / root cause\n"
-            f"  - velocity alerts / spikes\n"
-            f"  - cohort analysis / recovery rate\n"
-            f"  - agent ranking / peer benchmark\n"
-            f"  - nps waterfall / top bottom queues\n"
-            f"  - channel comparison / fcr impact\n"
-            f"  - hour pattern / day of week\n"
-            f"  --- CORE ANALYTICS ---\n"
-            f"  - what drives tnps?            (key drivers, ranked)\n"
-            f"  - my kpis / how many detractors\n"
-            f"  - detractors by call_type      (breakdown by any column)\n"
-            f"  - print top detractors by shortcode  (bordered table)\n"
-            f"  - join mapping                 (pick a mapping file, join it, print preview)\n"
-            f"  - repeat callers / repeated customers\n"
-            f"  - top owner_team               (most frequent values)\n"
-            f"  - show segments / any anomalies\n"
-            f"  - average <metric> by <column>\n"
-            f"And I learn from you: if I get a question wrong, say \"I meant "
-            f"drivers\" or teach me a word with \"churn means detractor\", and "
-            f"I'll remember it next time.")
+    return (f"I'm Roma — {name}'s senior CX analyst, running fully offline.\n"
+            f"I cover tNPS/NPS, CSAT, FCR, detractors, Contact & Reach rates, "
+            f"win-back, churn, severity and QA — using your own e& formulas.\n\n"
+            f"  ── TNPS REPORTS ───────────────────────────────────────────\n"
+            f"  run tnps / full report            26-sheet Excel dashboard\n"
+            f"  export tnps presentation          10-slide PPTX deck (e& branded)\n"
+            f"  forecast / predict next 30 days   Holt-Winters forecast\n"
+            f"  toxic combos / root cause         worst SC+queue pairs\n"
+            f"  velocity alerts / spikes          sudden detractor surges\n"
+            f"  cohort analysis / recovery rate   detractor recovery tracking\n"
+            f"  agent ranking / peer benchmark    percentile scoring\n"
+            f"  nps waterfall / top bottom queues monthly gain/loss\n"
+            f"  channel comparison / fcr impact   channel & FCR drill-down\n"
+            f"  hour pattern / day of week        timing analysis\n"
+            f"  ── TABLES & JOINS ─────────────────────────────────────────\n"
+            f"  print top detractors by shortcode bordered table, any column\n"
+            f"  print top detractors by queue in April  time-filtered table\n"
+            f"  join mapping                      pick a file, join it here\n"
+            f"  ── CHURN & SEVERITY ───────────────────────────────────────\n"
+            f"  win-back / churn recovery         month-over-month recovery rate\n"
+            f"  severity / critical cases         Critical/High/Medium breakdown\n"
+            f"  ── CORE ANALYTICS ─────────────────────────────────────────\n"
+            f"  my kpis                           NPS score, promoters, passives, detractors\n"
+            f"  what drives tnps?                 key drivers ranked\n"
+            f"  detractors by call_type           any breakdown\n"
+            f"  repeat callers                    multi-occurrence customers\n"
+            f"  show segments / any anomalies     clustering & outliers\n"
+            f"  ── EXPORT & SAVE ───────────────────────────────────────────\n"
+            f"  export tnps presentation          pptx\n"
+            f"  export full excel / export pdf    xlsx / pdf\n"
+            f"  save chat                         save this session as Word doc\n"
+            f"\nAnd I learn: 'churn means detractor' teaches me your vocabulary.")
 
 
 def _answer_repeat(conn, q: str) -> str | None:
@@ -285,16 +297,26 @@ def _answer_print_top(conn, q: str) -> str | None:
     if not found_table:
         return None
 
+    # time filter: "in April", "last month", "Q1", etc.
+    time_where = ""
+    time_label = ""
+    if datec:
+        from . import timefilter
+        tf = timefilter.parse(q, datec)
+        if tf:
+            time_where = f" AND {tf['where']}"
+            time_label = f"  ·  {tf['label']}"
+
     if nps:
         sql = (f'SELECT COALESCE(CAST("{dim_col}" AS TEXT), "(blank)") AS "{dim_col}", '
                f'COUNT(*) AS Detractors '
                f'FROM "{found_table}" '
-               f'WHERE CAST("{nps}" AS FLOAT) <= 6 '
+               f'WHERE CAST("{nps}" AS FLOAT) <= 6{time_where} '
                f'GROUP BY "{dim_col}" ORDER BY Detractors DESC LIMIT 25')
     else:
         sql = (f'SELECT COALESCE(CAST("{dim_col}" AS TEXT), "(blank)") AS "{dim_col}", '
                f'COUNT(*) AS Count '
-               f'FROM "{found_table}" WHERE "{dim_col}" IS NOT NULL '
+               f'FROM "{found_table}" WHERE "{dim_col}" IS NOT NULL{time_where} '
                f'GROUP BY "{dim_col}" ORDER BY Count DESC LIMIT 25')
 
     res = database.run_sql(conn, sql)
@@ -304,9 +326,14 @@ def _answer_print_top(conn, q: str) -> str | None:
     col2 = "Detractors" if nps else "Count"
     rows = [[str(r.get(dim_col, r.get("dimension", ""))), str(r.get(col2, 0))]
             for r in res["rows"]]
+    # update session context so follow-up questions can use the same dimension
+    _SESSION["last_dim"] = dim_col
+    _SESSION["last_table"] = found_table
+    if time_label:
+        _SESSION["last_time"] = time_label.strip(" ·").strip()
     return _format_bordered_table(
         [dim_col, col2], rows,
-        title=f"Top by {dim_col}  ·  table: {found_table}")
+        title=f"Top by {dim_col}  ·  table: {found_table}{time_label}")
 
 
 def _fmt_breakdown(b: dict) -> str:
@@ -474,15 +501,19 @@ def _answer_export(conn, q: str) -> str | None:
     from . import export_docs as ed
     try:
         if fmt == "pptx":
-            out = ed.export_pptx(conn, q); label = "PowerPoint deck"
+            # TNPS-specific deck if "tnps" or "full" is mentioned
+            if re.search(r"tnps|full|complete|all slides", q):
+                out = ed.export_tnps_pptx(conn, q); label = "TNPS PowerPoint deck (10 slides)"
+            else:
+                out = ed.export_pptx(conn, q); label = "PowerPoint deck"
         elif fmt == "docx":
             out = ed.export_docx(conn, q); label = "Word document"
         else:
             out = ed.export_pdf(conn, q); label = "PDF"
-    except ImportError as exc:
+    except ImportError:
         lib = {"pptx": "python-pptx", "docx": "python-docx", "pdf": "reportlab"}[fmt]
         return (f"That format needs the '{lib}' library, which isn't installed. "
-                f"Re-run setup_windows.bat, or install it, then try again.")
+                f"Run:  pip install {lib}")
     return f"Exported an e&-branded {label}:\n  {out}"
 
 
@@ -810,6 +841,125 @@ def _answer_alerts(conn, q: str) -> str | None:
     return alerts.alerts_text(conn)
 
 
+def _answer_winback(conn, q: str) -> str | None:
+    """Win-back / churn recovery: how many detractors recovered the next month?"""
+    if not re.search(r"win.?back|winback|churn|recover|retention|churned|"
+                     r"came back|returned|win back|استرداد|ريتنشن|كسب.عميل", q):
+        return None
+    from . import tnps_analytics as ta
+    from . import winback as wb
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return "No TNPS data found. Load survey data first."
+
+    summary = wb.build_winback_summary(df, cols)
+    if summary.empty:
+        return ("Not enough data for win-back analysis. Need at least 2 months of "
+                "dated survey data with a customer ID column (MSISDN).")
+
+    lines = ["Win-back / Churn Recovery (month-over-month):"]
+    show_cols = list(summary.columns)
+    rows = [[str(r[c]) for c in show_cols] for _, r in summary.iterrows()]
+    lines.append(_format_bordered_table(show_cols, rows, title="Recovery & Churn by Month"))
+
+    # also show by dimension if mentioned
+    dim_words = {"queue": cols.get("agent_queue"),
+                 "shortcode": cols.get("short_code"),
+                 "short code": cols.get("short_code"),
+                 "team": cols.get("owner_team"),
+                 "owner": cols.get("owner_team")}
+    for word, dim_col in dim_words.items():
+        if word in q and dim_col and dim_col in df.columns:
+            by_dim = wb.build_winback_by_dimension(df, cols, dim_col)
+            if not by_dim.empty:
+                rows_d = [[str(r[c]) for c in by_dim.columns] for _, r in by_dim.head(15).iterrows()]
+                lines.append(_format_bordered_table(
+                    list(by_dim.columns), rows_d,
+                    title=f"Recovery rate by {dim_col}"))
+            break
+
+    transitions = wb.build_winback_transitions(df, cols)
+    if not transitions.empty:
+        lines.append("\nNPS category transition matrix:")
+        rows_t = [[str(r[c]) for c in transitions.columns] for _, r in transitions.iterrows()]
+        lines.append(_format_bordered_table(list(transitions.columns), rows_t))
+
+    lines.append("\nTip: type 'export tnps presentation' to save this in the PowerPoint deck.")
+    return "\n".join(lines)
+
+
+def _answer_severity(conn, q: str) -> str | None:
+    """Severity breakdown of detractors: Critical / High / Medium."""
+    if not re.search(r"severity|critical|urgent|high risk|high priority|"
+                     r"how bad|worst cases|خطورة|حرجة|عاجل|أولوية", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return "No TNPS data found."
+    result = ta.build_severity_scores(df, cols)
+    if result.empty:
+        return "No detractor rows found to classify by severity."
+
+    rows = [[str(r[c]) for c in result.columns] for _, r in result.iterrows()]
+    table = _format_bordered_table(list(result.columns), rows,
+                                   title="Detractor Severity Breakdown")
+
+    total = int(result["Count"].sum())
+    critical = result[result["Severity"] == "Critical"]["Count"].sum()
+    return (f"Detractor severity breakdown ({total} detractors total):\n{table}\n\n"
+            f"  Critical cases ({critical}) need immediate recovery contact.\n"
+            f"  Repeat callers are bumped one level higher automatically.")
+
+
+def _answer_save_chat(conn, q: str) -> str | None:
+    """Save the current chat session as a Word document."""
+    if not re.search(r"\bsave\b.{0,15}\bchat\b|\bexport.{0,15}chat\b|"
+                     r"/save|save.session|save.report|احفظ.المحادثة", q):
+        return None
+    if not _CHAT_LOG:
+        return "Nothing to save yet — the chat log is empty."
+
+    try:
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+        from . import config
+        config.ensure_dirs()
+
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = "Arial"; style.font.size = Pt(11)
+
+        title = doc.add_heading("Roma – Chat Session Report", level=0)
+        for run in title.runs:
+            run.font.color.rgb = RGBColor.from_string("E00800")
+
+        from datetime import datetime
+        doc.add_paragraph(
+            f"e& Consumer  |  {datetime.now():%Y-%m-%d %H:%M}  |  prepared by Roma"
+        ).italic = True
+        doc.add_paragraph()
+
+        for i, (question, answer) in enumerate(_CHAT_LOG, 1):
+            q_para = doc.add_paragraph()
+            q_run = q_para.add_run(f"Q{i}: {question}")
+            q_run.bold = True
+            q_run.font.color.rgb = RGBColor.from_string("1A1A1A")
+
+            a_para = doc.add_paragraph()
+            a_run = a_para.add_run(answer)
+            a_run.font.color.rgb = RGBColor.from_string("333333")
+            doc.add_paragraph()
+
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        out = config.REPORTS_DIR / f"chat_session_{stamp}.docx"
+        doc.save(out)
+        return f"Chat session saved ({len(_CHAT_LOG)} Q&A pairs):\n  {out}"
+    except Exception as exc:  # noqa: BLE001
+        return f"Save failed: {exc}"
+
+
 def _answer_join_mapping(conn, q: str) -> str | None:
     """Interactive join: pick a mapping file via dialog, choose the key, merge."""
     if not re.search(r"\bjoin\b|\bmerge\b|\bvlookup\b|join.{0,15}map|map.{0,15}join|"
@@ -959,7 +1109,7 @@ def _answer_mapping(conn, q: str) -> str | None:
             "You can also run it from the terminal:  roma map  (same flow, no chat needed).")
 
 
-_BUILDERS = [_answer_tnps_dashboard, _answer_export,
+_BUILDERS = [_answer_tnps_dashboard, _answer_save_chat, _answer_export,
              _answer_join_mapping, _answer_mapping,
              _answer_assumptions, _answer_stats, _answer_compare,
              _answer_alerts, _answer_identity,
@@ -969,6 +1119,7 @@ _BUILDERS = [_answer_tnps_dashboard, _answer_export,
              _answer_metric_by_dim, _answer_kpis,
              _answer_forecast, _answer_waterfall, _answer_top_bottom,
              _answer_agent_ranking, _answer_pattern, _answer_channel_fcr,
+             _answer_winback, _answer_severity,
              _answer_cohort, _answer_velocity, _answer_toxic_combos]
 
 
@@ -1192,6 +1343,10 @@ def answer(conn, question: str, use_llm: bool, model: str | None) -> str:
         return teach
 
     structured = structured_answer(conn, question)
+
+    # record Q&A in session log for /save (skip save-chat itself to avoid recursion)
+    if structured and not re.search(r"\bsave\b.{0,15}\bchat\b|/save", question.lower()):
+        _CHAT_LOG.append((question, structured))
 
     if use_llm and model:
         context = structured or knowledge_text(conn)

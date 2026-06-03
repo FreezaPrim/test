@@ -203,6 +203,8 @@ def _interactive_chat() -> int:
 
 
 def cmd_chat(args) -> int:
+    from . import engine as _eng
+    _eng._CHAT_LOG.clear()  # fresh log each session
     return _interactive_chat()
 
 
@@ -585,6 +587,26 @@ def cmd_forecast(args) -> int:
     return 0
 
 
+def cmd_pptx(args) -> int:
+    """Export a full e&-branded TNPS PowerPoint deck (10 slides)."""
+    from . import export_docs as ed
+    conn = database.connect()
+    if not database.list_tables(conn):
+        _say("No data loaded yet. Add files first:  roma add <files>")
+        return 1
+    _say("Building TNPS PowerPoint presentation (10 slides)...")
+    try:
+        out = ed.export_tnps_pptx(conn)
+        _say(f"Presentation saved: {out}")
+    except ImportError:
+        _say("python-pptx is not installed. Run:  pip install python-pptx")
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        _say(f"Error: {exc}")
+        return 1
+    return 0
+
+
 # --------------------------------- parser ---------------------------------- #
 
 def build_parser() -> argparse.ArgumentParser:
@@ -678,6 +700,9 @@ def build_parser() -> argparse.ArgumentParser:
     fr = sub.add_parser("forecast", help="Forecast detractor trends (Holt-Winters).")
     fr.add_argument("--horizon", type=int, default=30, help="Days to forecast (default 30).")
     fr.set_defaults(func=cmd_forecast)
+
+    pp = sub.add_parser("pptx", help="Export full TNPS PowerPoint deck (10 slides, e& branded).")
+    pp.set_defaults(func=cmd_pptx)
 
     return p
 
