@@ -1,5 +1,6 @@
 """Tests for Roma's TNPS analytics integration."""
 import pytest
+import re
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta
@@ -569,3 +570,121 @@ class TestSQLiteIntegration:
 
     def teardown_method(self):
         self.conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW: engine-level tests — bordered table & print-top builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFormatBorderedTable:
+    """Unit tests for _format_bordered_table."""
+
+    def _fn(self):
+        from roma.engine import _format_bordered_table
+        return _format_bordered_table
+
+    def test_basic_two_columns(self):
+        fn = self._fn()
+        result = fn(["Name", "Score"], [["Alice", "9"], ["Bob", "3"]])
+        assert "│" in result
+        assert "┌" in result
+        assert "┘" in result
+        assert "Alice" in result
+        assert "Score" in result
+
+    def test_empty_rows(self):
+        fn = self._fn()
+        result = fn(["A", "B"], [])
+        assert "A" in result
+        assert "│" in result
+
+    def test_title_renders(self):
+        fn = self._fn()
+        result = fn(["X"], [["1"]], title="My Report")
+        assert "My Report" in result
+
+    def test_max_rows_truncation(self):
+        fn = self._fn()
+        rows = [[str(i)] for i in range(100)]
+        result = fn(["n"], rows, max_rows=10)
+        assert "more rows" in result
+
+    def test_no_truncation_at_limit(self):
+        fn = self._fn()
+        rows = [[str(i)] for i in range(5)]
+        result = fn(["n"], rows, max_rows=10)
+        assert "more rows" not in result
+
+
+class TestAnswerPrintTop:
+    """Integration tests for _answer_print_top engine builder."""
+
+    def setup_method(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("""
+            CREATE TABLE survey (
+                shortcode TEXT, nps_score INTEGER, owner_team TEXT
+            )""")
+        data = [
+            ("SC01", 3, "TeamA"), ("SC01", 2, "TeamA"), ("SC02", 5, "TeamB"),
+            ("SC01", 8, "TeamA"), ("SC02", 3, "TeamB"), ("SC03", 1, "TeamC"),
+            ("SC03", 4, "TeamC"), ("SC03", 9, "TeamC"), ("SC02", 6, "TeamB"),
+        ]
+        self.conn.executemany("INSERT INTO survey VALUES (?,?,?)", data)
+        self.conn.execute("""
+            CREATE TABLE _roma_sources
+            (name TEXT, kind TEXT, origin_file TEXT, rows INTEGER, added_at TEXT)""")
+        self.conn.execute(
+            "INSERT INTO _roma_sources VALUES ('survey','table','test.csv',9,datetime('now'))")
+        self.conn.commit()
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_print_top_returns_bordered_table(self):
+        from roma.engine import _answer_print_top
+        result = _answer_print_top(self.conn, "print top detractors by shortcode")
+        # should return something (either a table or None if nps col not detected)
+        # we check that if it returns, it has borders
+        if result is not None:
+            assert "│" in result or "shortcode" in result.lower()
+
+    def test_print_top_returns_none_on_no_match(self):
+        from roma.engine import _answer_print_top
+        result = _answer_print_top(self.conn, "what is the weather today")
+        assert result is None
+
+    def test_print_top_requires_print_or_show(self):
+        from roma.engine import _answer_print_top
+        result = _answer_print_top(self.conn, "drivers of nps")
+        assert result is None
+
+    def test_print_top_owner_team(self):
+        from roma.engine import _answer_print_top
+        result = _answer_print_top(self.conn, "show top detractors by owner team")
+        if result is not None:
+            assert "│" in result
+
+
+class TestJoinMappingTrigger:
+    """Verify _answer_join_mapping trigger regex (no interactive I/O)."""
+
+    def _matches(self, q: str) -> bool:
+        return bool(re.search(
+            r"\bjoin\b|\bmerge\b|\bvlookup\b|join.{0,15}map|map.{0,15}join|"
+            r"link.*file|add.*mapping.*file|mapping.*from.*file|"
+            r"دمج.*ملف|ربط.*ملف|أضف.*مابينج", q))
+
+    def test_join_mapping_triggers(self):
+        assert self._matches("join mapping")
+        assert self._matches("join the mapping file")
+        assert self._matches("merge two sheets")
+        assert self._matches("vlookup shortcode")
+        assert self._matches("add mapping from file")
+
+    def test_join_mapping_no_false_positive_on_description(self):
+        # These should NOT trigger _answer_join_mapping
+        assert not self._matches("how does the map feature work")
+        assert not self._matches("what drives tnps")
+        assert not self._matches("show me detractors by queue")

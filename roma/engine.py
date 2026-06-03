@@ -11,6 +11,8 @@ Strategy (all offline):
 from __future__ import annotations
 
 import re
+import sys
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -39,6 +41,39 @@ def _format_table(cols: list[str], rows: list[dict]) -> str:
     body = "\n".join("  ".join(str(r.get(c, "")).ljust(widths[c]) for c in cols)
                      for r in rows)
     return f"{head}\n{line}\n{body}"
+
+
+def _format_bordered_table(cols: list[str], rows: list[list],
+                            title: str = "", max_rows: int = 50) -> str:
+    """Render a Unicode box-drawing bordered table for terminal display."""
+    display = rows[:max_rows]
+    if not cols:
+        return "(no data)"
+    widths = []
+    for i, c in enumerate(cols):
+        col_max = max((len(str(r[i])) if i < len(r) else 0) for r in display) if display else 0
+        widths.append(max(len(str(c)), col_max, 1))
+
+    def _row(cells: list) -> str:
+        return "│ " + " │ ".join(
+            str(cells[i] if i < len(cells) else "").ljust(widths[i])
+            for i in range(len(cols))
+        ) + " │"
+
+    top = "┌─" + "─┬─".join("─" * w for w in widths) + "─┐"
+    mid = "├─" + "─┼─".join("─" * w for w in widths) + "─┤"
+    bot = "└─" + "─┴─".join("─" * w for w in widths) + "─┘"
+
+    out = []
+    if title:
+        out.append(f"  {title}")
+    out += [top, _row(cols), mid]
+    for r in display:
+        out.append(_row(r))
+    out.append(bot)
+    if len(rows) > max_rows:
+        out.append(f"  … {len(rows) - max_rows} more rows not shown  (type 'export' to save all)")
+    return "\n".join(out)
 
 
 def _all_columns(conn) -> dict[str, str]:
@@ -135,6 +170,8 @@ def _answer_identity(conn, q: str) -> str | None:
             f"  - what drives tnps?            (key drivers, ranked)\n"
             f"  - my kpis / how many detractors\n"
             f"  - detractors by call_type      (breakdown by any column)\n"
+            f"  - print top detractors by shortcode  (bordered table)\n"
+            f"  - join mapping                 (pick a mapping file, join it, print preview)\n"
             f"  - repeat callers / repeated customers\n"
             f"  - top owner_team               (most frequent values)\n"
             f"  - show segments / any anomalies\n"
@@ -189,6 +226,87 @@ def _answer_top_values(conn, q: str) -> str | None:
             continue
         return f"Top '{col}' in {t['table']}:\n" + _format_table(res["columns"], res["rows"])
     return None
+
+
+def _answer_print_top(conn, q: str) -> str | None:
+    """'print top detractors by X' / 'show top X breakdown' → bordered table."""
+    if not re.search(r"\bprint\b|\bshow\b|\blist\b|\bdisplay\b|\btable\b", q):
+        return None
+    if not re.search(r"top|detractor|breakdown|worst|ranked", q):
+        return None
+
+    from . import tnps_analytics as ta
+    from . import detractors as det
+
+    # build a keyword → actual column name lookup from TNPS col detection
+    _, tnps_cols = ta.load_tnps_df(conn)
+    dim_map: dict[str, str] = {}
+    if isinstance(tnps_cols, dict):
+        for key, col in tnps_cols.items():
+            if col:
+                alias = key.lower().replace("_", " ")
+                dim_map[alias] = col
+                dim_map[col.lower()] = col
+                dim_map[col.lower().replace("_", " ")] = col
+
+    # also include all currently loaded columns
+    for col_lower, col_real in _all_columns(conn).items():
+        dim_map.setdefault(col_lower, col_real)
+        dim_map.setdefault(col_lower.replace("_", " "), col_real)
+
+    # strip noise words and look for a column name in what remains
+    noise = r"\b(print|show|list|display|table|top|detractor[s]?|breakdown|worst|ranked|by|the|in|of|for)\b"
+    q_clean = re.sub(noise, " ", q).strip()
+    dim_col = None
+    # try longest match first to prefer "owner team" over "owner"
+    candidates = sorted(dim_map.keys(), key=len, reverse=True)
+    for kw in candidates:
+        if kw and kw in q_clean:
+            dim_col = dim_map[kw]
+            break
+    # fallback: any word in q_clean that matches a column
+    if not dim_col:
+        for word in re.findall(r"[a-z][a-z_0-9]*", q_clean):
+            if word in dim_map:
+                dim_col = dim_map[word]
+                break
+
+    if not dim_col:
+        return None
+
+    # find which loaded table has this column
+    table, nps, idc, datec, names = det._detractor_table(conn)
+    found_table = table
+    for t in database.list_tables(conn):
+        if any(c["name"] == dim_col for c in t["columns"]):
+            found_table = t["table"]
+            break
+
+    if not found_table:
+        return None
+
+    if nps:
+        sql = (f'SELECT COALESCE(CAST("{dim_col}" AS TEXT), "(blank)") AS "{dim_col}", '
+               f'COUNT(*) AS Detractors '
+               f'FROM "{found_table}" '
+               f'WHERE CAST("{nps}" AS FLOAT) <= 6 '
+               f'GROUP BY "{dim_col}" ORDER BY Detractors DESC LIMIT 25')
+    else:
+        sql = (f'SELECT COALESCE(CAST("{dim_col}" AS TEXT), "(blank)") AS "{dim_col}", '
+               f'COUNT(*) AS Count '
+               f'FROM "{found_table}" WHERE "{dim_col}" IS NOT NULL '
+               f'GROUP BY "{dim_col}" ORDER BY Count DESC LIMIT 25')
+
+    res = database.run_sql(conn, sql)
+    if "error" in res or not res.get("rows"):
+        return None
+
+    col2 = "Detractors" if nps else "Count"
+    rows = [[str(r.get(dim_col, r.get("dimension", ""))), str(r.get(col2, 0))]
+            for r in res["rows"]]
+    return _format_bordered_table(
+        [dim_col, col2], rows,
+        title=f"Top by {dim_col}  ·  table: {found_table}")
 
 
 def _fmt_breakdown(b: dict) -> str:
@@ -692,26 +810,163 @@ def _answer_alerts(conn, q: str) -> str | None:
     return alerts.alerts_text(conn)
 
 
-def _answer_mapping(conn, q: str) -> str | None:
-    if not re.search(r"add mapping|^map\b|mapping|vlookup|merge.*file|"
-                     r"join.*file|link.*file|مابينج|دمج|اربط", q):
+def _answer_join_mapping(conn, q: str) -> str | None:
+    """Interactive join: pick a mapping file via dialog, choose the key, merge."""
+    if not re.search(r"\bjoin\b|\bmerge\b|\bvlookup\b|join.{0,15}map|map.{0,15}join|"
+                     r"link.*file|add.*mapping.*file|mapping.*from.*file|"
+                     r"دمج.*ملف|ربط.*ملف|أضف.*مابينج", q):
         return None
-    return ("To map two files, run this in the terminal (it walks you through "
-            "it step by step):\n"
-            "    roma map\n"
-            "Roma will: open a picker for the BASE file -> list its columns -> "
-            "you pick the key; then the LOOKUP file -> pick its matching key -> "
-            "pick which columns to add. It merges them, loads the result, and "
-            "saves an e&-branded Excel.\n"
-            "You can also pass files directly:  roma map base.xlsx lookup.xlsx")
+
+    from . import mapping as mp
+
+    # clear any spinner artifacts and signal interactive mode
+    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.flush()
+
+    tables = database.list_tables(conn)
+    if not tables:
+        return "No data loaded yet. Add a file first:  roma add <file>"
+
+    # pick base table
+    print()
+    print("  ┌─ Join: loaded tables ─────────────────────────────────")
+    for i, t in enumerate(tables, 1):
+        print(f"  │  [{i}] {t['table']}  ({t['row_count']} rows)")
+    print("  └───────────────────────────────────────────────────────")
+
+    if len(tables) == 1:
+        base_info = tables[0]
+        print(f"\n  Using '{base_info['table']}' as the base table.")
+    else:
+        bsel = input("\n  Which table is the BASE? (number) > ").strip()
+        idx = (int(bsel) - 1) if bsel.isdigit() else 0
+        base_info = tables[max(0, min(idx, len(tables) - 1))]
+
+    base_cols = [c["name"] for c in base_info["columns"]]
+
+    # open file picker for the mapping/lookup file
+    print("\n  Opening file picker for the MAPPING file...")
+    lookup_path: str | None = None
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        lookup_path = filedialog.askopenfilename(
+            title="Select MAPPING / LOOKUP file",
+            filetypes=[("Data files", "*.xlsx *.xls *.xlsm *.csv *.tsv"),
+                       ("All files", "*.*")])
+        root.destroy()
+    except Exception:
+        pass
+
+    if not lookup_path:
+        lookup_path = input(
+            "  (No picker available) Type path to the mapping file > "
+        ).strip().strip('"')
+    if not lookup_path:
+        return "No mapping file selected. Cancelled."
+
+    try:
+        look_cols = mp.columns_of(lookup_path)
+    except Exception as exc:  # noqa: BLE001
+        return f"Couldn't read mapping file: {exc}"
+
+    # show columns side by side
+    print(f"\n  BASE '{base_info['table']}' columns:")
+    for i, c in enumerate(base_cols, 1):
+        print(f"    [{i:2d}] {c}")
+
+    print(f"\n  MAPPING '{Path(lookup_path).name}' columns:")
+    for i, c in enumerate(look_cols, 1):
+        print(f"    [{i:2d}] {c}")
+
+    # pick the common / join key from the mapping file
+    print(f"\n  Which column in the MAPPING file is the JOIN KEY?")
+    lk = input("  (number or name) > ").strip()
+    lookup_key = mp.resolve_choice(lk, look_cols)
+    if not lookup_key:
+        return f"Column not recognised: '{lk}'"
+
+    # auto-detect matching base column
+    base_key = next((c for c in base_cols if c.lower() == lookup_key.lower()), None)
+    if not base_key:
+        print(f"\n  Which column in the BASE table matches '{lookup_key}'?")
+        bk = input("  (number or name) > ").strip()
+        base_key = mp.resolve_choice(bk, base_cols)
+        if not base_key:
+            return f"Base column not recognised: '{bk}'"
+    else:
+        print(f"  Auto-matched: '{base_key}' (base) ↔ '{lookup_key}' (mapping)")
+
+    # pick which columns to bring across
+    other_look = [c for c in look_cols if c != lookup_key]
+    print(f"\n  Columns available to ADD from the mapping file:")
+    for i, c in enumerate(other_look, 1):
+        print(f"    [{i:2d}] {c}")
+    ac = input("\n  Which to add? (numbers, names, or 'all') > ").strip()
+    if ac.lower() == "all":
+        add_cols = other_look
+    else:
+        add_cols = mp.resolve_multi(ac, other_look)
+    add_cols = [c for c in add_cols if c != lookup_key]
+    if not add_cols:
+        return "No columns chosen to add. Cancelled."
+
+    # do the left join
+    print(f"\n  Joining on '{base_key}' ↔ '{lookup_key}', adding: {', '.join(add_cols)} ...")
+    base_df = pd.read_sql_query(f'SELECT * FROM "{base_info["table"]}"', conn)
+    lookup_df = mp._read_any(lookup_path)
+
+    right = lookup_df[[lookup_key] + [c for c in add_cols if c != lookup_key]].copy()
+    if lookup_key != base_key:
+        right = right.rename(columns={lookup_key: base_key})
+    merged = base_df.merge(right, on=base_key, how="left", suffixes=("", "_mapped"))
+
+    matched = int(merged[add_cols[0]].notna().sum()) if add_cols else 0
+
+    # load into SQLite and save Excel
+    saved = mp.save_and_load(merged, conn, name="mapped")
+
+    # bordered preview of joined result
+    preview_cols = [base_key] + add_cols[:5]
+    sample_df = merged[preview_cols].head(20)
+    preview_rows = [
+        [("" if (isinstance(v, float) and pd.isna(v)) else str(v)) for v in r]
+        for r in sample_df.values.tolist()
+    ]
+    preview = _format_bordered_table(
+        preview_cols, preview_rows,
+        title=f"Join preview — {matched}/{len(base_df)} rows matched  ·  table: mapped")
+
+    return (f"\nJoin done.  {matched} of {len(base_df)} base rows matched.\n"
+            f"  Loaded as table 'mapped' in Roma's database.\n"
+            f"  Excel saved: {saved['file']}\n\n"
+            f"{preview}\n\n"
+            f"  Tip: type  'print top detractors by {add_cols[0]}'  to see a ranked table.")
 
 
-_BUILDERS = [_answer_tnps_dashboard, _answer_export, _answer_mapping,
+def _answer_mapping(conn, q: str) -> str | None:
+    if not re.search(r"how.*map|explain.*map|what.*mapping|^mapping$|"
+                     r"roma map\b|merge.*file|مابينج.*ازاي|شرح.*مابينج", q):
+        return None
+    return ("To join / map two files right here in chat, type:\n"
+            "    join mapping\n"
+            "Roma will open a file picker for the MAPPING file, list both tables' "
+            "columns, ask for the common key, pick which columns to add, merge them, "
+            "load the result, and print a preview — all without leaving the chat.\n\n"
+            "You can also run it from the terminal:  roma map  (same flow, no chat needed).")
+
+
+_BUILDERS = [_answer_tnps_dashboard, _answer_export,
+             _answer_join_mapping, _answer_mapping,
              _answer_assumptions, _answer_stats, _answer_compare,
              _answer_alerts, _answer_identity,
              _answer_summary, _answer_detractors,
              _answer_drivers, _answer_segments, _answer_trend, _answer_anomalies,
-             _answer_repeat, _answer_top_values, _answer_metric_by_dim, _answer_kpis,
+             _answer_repeat, _answer_top_values, _answer_print_top,
+             _answer_metric_by_dim, _answer_kpis,
              _answer_forecast, _answer_waterfall, _answer_top_bottom,
              _answer_agent_ranking, _answer_pattern, _answer_channel_fcr,
              _answer_cohort, _answer_velocity, _answer_toxic_combos]
