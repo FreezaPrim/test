@@ -586,9 +586,8 @@ class TestFormatBorderedTable:
     def test_basic_two_columns(self):
         fn = self._fn()
         result = fn(["Name", "Score"], [["Alice", "9"], ["Bob", "3"]])
-        assert "│" in result
-        assert "┌" in result
-        assert "┘" in result
+        assert "|" in result
+        assert "+" in result
         assert "Alice" in result
         assert "Score" in result
 
@@ -596,7 +595,7 @@ class TestFormatBorderedTable:
         fn = self._fn()
         result = fn(["A", "B"], [])
         assert "A" in result
-        assert "│" in result
+        assert "|" in result
 
     def test_title_renders(self):
         fn = self._fn()
@@ -648,7 +647,7 @@ class TestAnswerPrintTop:
         # should return something (either a table or None if nps col not detected)
         # we check that if it returns, it has borders
         if result is not None:
-            assert "│" in result or "shortcode" in result.lower()
+            assert "|" in result or "shortcode" in result.lower()
 
     def test_print_top_returns_none_on_no_match(self):
         from roma.engine import _answer_print_top
@@ -664,7 +663,7 @@ class TestAnswerPrintTop:
         from roma.engine import _answer_print_top
         result = _answer_print_top(self.conn, "show top detractors by owner team")
         if result is not None:
-            assert "│" in result
+            assert "|" in result
 
 
 class TestJoinMappingTrigger:

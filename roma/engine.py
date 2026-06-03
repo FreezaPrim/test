@@ -59,7 +59,7 @@ def _format_table(cols: list[str], rows: list[dict]) -> str:
 
 def _format_bordered_table(cols: list[str], rows: list[list],
                             title: str = "", max_rows: int = 50) -> str:
-    """Render a Unicode box-drawing bordered table for terminal display."""
+    """Render an ASCII bordered table that works in Windows CMD, PowerShell, and Linux."""
     display = rows[:max_rows]
     if not cols:
         return "(no data)"
@@ -69,22 +69,20 @@ def _format_bordered_table(cols: list[str], rows: list[list],
         widths.append(max(len(str(c)), col_max, 1))
 
     def _row(cells: list) -> str:
-        return "│ " + " │ ".join(
+        return "| " + " | ".join(
             str(cells[i] if i < len(cells) else "").ljust(widths[i])
             for i in range(len(cols))
-        ) + " │"
+        ) + " |"
 
-    top = "┌─" + "─┬─".join("─" * w for w in widths) + "─┐"
-    mid = "├─" + "─┼─".join("─" * w for w in widths) + "─┤"
-    bot = "└─" + "─┴─".join("─" * w for w in widths) + "─┘"
+    sep = "+" + "+".join("-" * (w + 2) for w in widths) + "+"
 
     out = []
     if title:
         out.append(f"  {title}")
-    out += [top, _row(cols), mid]
+    out += [sep, _row(cols), sep]
     for r in display:
         out.append(_row(r))
-    out.append(bot)
+    out.append(sep)
     if len(rows) > max_rows:
         out.append(f"  … {len(rows) - max_rows} more rows not shown  (type 'export' to save all)")
     return "\n".join(out)
@@ -203,20 +201,72 @@ def _answer_repeat(conn, q: str) -> str | None:
     if not re.search(r"repeat|repeated|recurring|multiple times|came back|again", q):
         return None
     for t in database.list_tables(conn):
-        key = next((c["name"] for c in t["columns"]
-                    if re.search(r"msisdn|phone|mobile|customer|caller|number|account",
-                                 c["name"], re.IGNORECASE)), None)
+        cols_info = t["columns"]
+        col_names = [c["name"] for c in cols_info]
+
+        # Priority order: msisdn > phone > mobile > number > account > caller > customer
+        # Skip boolean/flag/status columns (very few distinct values like Y/N)
+        def _pick_id_col() -> str | None:
+            priority = [
+                r"msisdn",
+                r"phone",
+                r"mobile",
+                r"subscriber",
+                r"account",
+                r"caller",
+                r"cust.*id|id.*cust",
+                r"number",
+                r"customer",
+            ]
+            for pat in priority:
+                match = next((c for c in col_names
+                              if re.search(pat, c, re.IGNORECASE)), None)
+                if not match:
+                    continue
+                # validate: must have many distinct values (not a Y/N flag)
+                chk = database.run_sql(
+                    conn,
+                    f'SELECT COUNT(DISTINCT "{match}") AS n FROM "{t["table"]}"'
+                )
+                distinct = (chk.get("rows") or [{}])[0].get("n", 0)
+                if distinct > 10:   # real ID column has many distinct values
+                    return match
+            return None
+
+        key = _pick_id_col()
         if not key:
             continue
-        sql = (f'SELECT "{key}" AS id, COUNT(*) AS times FROM "{t["table"]}" '
-               f'GROUP BY "{key}" HAVING COUNT(*) > 1 ORDER BY times DESC LIMIT 15')
+
+        # also filter to detractors if NPS column is present
+        from . import tnps_analytics as ta
+        _, tnps_cols = ta.load_tnps_df(conn)
+        nps_col = tnps_cols.get("nps") if isinstance(tnps_cols, dict) else None
+        nps_filter = ""
+        if nps_col and nps_col in [c["name"] for c in cols_info]:
+            nps_filter = f' AND CAST("{nps_col}" AS FLOAT) <= 6'
+
+        sql = (f'SELECT CAST("{key}" AS TEXT) AS MSISDN, COUNT(*) AS times '
+               f'FROM "{t["table"]}" WHERE "{key}" IS NOT NULL{nps_filter} '
+               f'GROUP BY "{key}" HAVING COUNT(*) > 1 ORDER BY times DESC LIMIT 20')
         res = database.run_sql(conn, sql)
         if "error" in res or not res.get("rows"):
-            continue
-        total_sql = (f'SELECT COUNT(*) AS n FROM (SELECT "{key}" FROM "{t["table"]}" '
-                     f'GROUP BY "{key}" HAVING COUNT(*) > 1)')
-        nrep = database.run_sql(conn, total_sql)["rows"][0]["n"]
-        lines = [f"Repeat customers in '{t['table']}' (by {key}): "
+            # fallback: without NPS filter
+            sql2 = (f'SELECT CAST("{key}" AS TEXT) AS MSISDN, COUNT(*) AS times '
+                    f'FROM "{t["table"]}" WHERE "{key}" IS NOT NULL '
+                    f'GROUP BY "{key}" HAVING COUNT(*) > 1 ORDER BY times DESC LIMIT 20')
+            res = database.run_sql(conn, sql2)
+            nps_filter = ""
+            if "error" in res or not res.get("rows"):
+                continue
+
+        total_sql = (f'SELECT COUNT(*) AS n FROM ('
+                     f'SELECT "{key}" FROM "{t["table"]}" WHERE "{key}" IS NOT NULL{nps_filter}'
+                     f' GROUP BY "{key}" HAVING COUNT(*) > 1)')
+        nrep_res = database.run_sql(conn, total_sql)
+        nrep = (nrep_res.get("rows") or [{}])[0].get("n", len(res["rows"]))
+
+        label = "Repeat detractors" if nps_filter else "Repeat customers"
+        lines = [f"{label} in '{t['table']}' (by {key}): "
                  f"{nrep} appear more than once. Top:"]
         lines.append(_format_table(res["columns"], res["rows"]))
         return "\n".join(lines)

@@ -346,6 +346,7 @@ def export_tnps_pptx(conn, time_q: str = "") -> Path:
     stamp = f"e& Consumer  |  {datetime.now():%B %Y}  |  prepared by Roma"
 
     # load TNPS data once
+    import pandas as pd  # noqa: PLC0415
     df, cols = ta.load_tnps_df(conn)
 
     # ── Slide 1: Title ─────────────────────────────────────────────────── #
