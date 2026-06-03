@@ -121,6 +121,17 @@ def _answer_identity(conn, q: str) -> str | None:
             f"detractors, Contact & Reach rates, win-back, severity and QA scoring, "
             f"and I apply your own formulas.\n"
             f"Ask me things like:\n"
+            f"  --- TNPS DASHBOARD ---\n"
+            f"  - tnps dashboard / run tnps / full report  (30-sheet Excel)\n"
+            f"  - forecast / predict next 30 days\n"
+            f"  - toxic combos / root cause\n"
+            f"  - velocity alerts / spikes\n"
+            f"  - cohort analysis / recovery rate\n"
+            f"  - agent ranking / peer benchmark\n"
+            f"  - nps waterfall / top bottom queues\n"
+            f"  - channel comparison / fcr impact\n"
+            f"  - hour pattern / day of week\n"
+            f"  --- CORE ANALYTICS ---\n"
             f"  - what drives tnps?            (key drivers, ranked)\n"
             f"  - my kpis / how many detractors\n"
             f"  - detractors by call_type      (breakdown by any column)\n"
@@ -357,6 +368,204 @@ def _answer_export(conn, q: str) -> str | None:
     return f"Exported an e&-branded {label}:\n  {out}"
 
 
+def _answer_tnps_dashboard(conn, q: str) -> str | None:
+    """Catch 'run tnps', 'dashboard', 'full report' etc. and export the dashboard."""
+    if not re.search(r"dashboard|full.report|full report|generate.report|"
+                     r"run report|run tnps|export.all|all sheets|"
+                     r"ريبورت|داشبورد|تقرير.كامل|اعمل.ريبورت", q):
+        return None
+    # Don't double-fire if already handled by _answer_export
+    if re.search(r"\bexport\b|\bsave\b", q):
+        return None
+    from . import export_excel as ex
+    try:
+        out = ex.export_tnps_dashboard(conn, q)
+        return (f"TNPS dashboard saved (26 sheets — Dashboard, KPIs, Detractors, "
+                f"Forecast, Toxic Combos, Agent Ranking, and more):\n  {out}")
+    except Exception as exc:  # noqa: BLE001
+        return f"Dashboard error: {exc}"
+
+
+def _answer_forecast(conn, q: str) -> str | None:
+    if not re.search(r"forecast|predict|next.*days?|coming.*days?|future|projection|"
+                     r"تنبؤ|توقع|المستقبل|الأيام القادمة", q):
+        return None
+    from . import tnps_analytics as ta
+    from . import forecast as fc
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return "No TNPS data found to forecast."
+    daily = ta.build_daily_trend(df, cols)
+    if daily.empty:
+        return "Not enough daily data to build a forecast."
+    m = re.search(r"(\d+)\s*days?", q)
+    horizon = int(m.group(1)) if m else 30
+    result = fc.build_forecast(daily, horizon=min(horizon, 90))
+    if result.empty:
+        return "Not enough data to forecast (need at least 4 days)."
+    lines = [f"Holt-Winters forecast — next {horizon} days:"]
+    for _, r in result.head(7).iterrows():
+        d = str(r["Date"])[:10]
+        rate = r.get("Forecast_Detractor_Rate_%", 0)
+        lo = r.get("Forecast_Detractor_Rate_%_Lower", rate)
+        hi = r.get("Forecast_Detractor_Rate_%_Upper", rate)
+        lines.append(f"  {d}:  det.rate ≈ {rate:.1f}%  (range {lo:.1f}% – {hi:.1f}%)")
+    if horizon > 7:
+        lines.append(f"  ... ({horizon} days total in the forecast)")
+    breach = result.attrs.get("breach_date")
+    if breach and breach != "No breach in horizon":
+        lines.append(f"\n  ⚠  Projected 40% target breach: {breach}")
+    else:
+        lines.append(f"\n  ✓  No breach of 40% detractor target in the {horizon}-day horizon.")
+    lines.append(f"\nTip: type 'export tnps dashboard' to save the full forecast sheet.")
+    return "\n".join(lines)
+
+
+def _answer_waterfall(conn, q: str) -> str | None:
+    if not re.search(r"waterfall|nps.*month|month.*nps|monthly.nps|gained|lost|"
+                     r"promoters.*month|شلال|شهري", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    result = ta.build_nps_waterfall(df, cols)
+    if result.empty:
+        return "No monthly data for waterfall."
+    lines = ["NPS Waterfall (monthly):"]
+    for _, r in result.iterrows():
+        lines.append(f"  {r['Month']}:  NPS={r['NPS_Score']:+.1f}  |  "
+                     f"+{int(r['Promoters'])} promoters  -{int(r['Detractors'])} detractors  "
+                     f"→ net {int(r['Net_Gain']):+d}  |  det.rate {r['Detractor_Rate_%']:.1f}%")
+    return "\n".join(lines)
+
+
+def _answer_top_bottom(conn, q: str) -> str | None:
+    if not re.search(r"top.*bottom|best.*worst|worst.*best|top 10|bottom 10|"
+                     r"ranked.queues|best queues|worst queues|league|"
+                     r"أفضل.*أسوأ|أسوأ.*أفضل", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    result = ta.build_top_bottom(df, cols)
+    if result.empty:
+        return "Not enough data for top/bottom ranking."
+    lines = ["Top & Bottom queues by detractor rate:"]
+    for rank_type in ["Worst 10 Queues", "Best 10 Queues",
+                      "Worst 10 Short Codes", "Best 10 Short Codes"]:
+        sub = result[result["Rank_Type"] == rank_type]
+        if sub.empty:
+            continue
+        lines.append(f"\n  {rank_type}:")
+        for _, r in sub.head(5).iterrows():
+            lines.append(f"    {str(r['Name']):<40} {r['Detractor_Rate_%']:.1f}%  "
+                         f"({int(r['Detractor_Count'])} det.)")
+    return "\n".join(lines)
+
+
+def _answer_agent_ranking(conn, q: str) -> str | None:
+    if not re.search(r"agent.rank|rank.*agent|agent.perf|best.agent|worst.agent|"
+                     r"peer.bench|benchmark|percentile|band|"
+                     r"ترتيب.*وكيل|أفضل.*وكيل|أسوأ.*وكيل", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    if re.search(r"peer|bench", q):
+        result = ta.build_agent_peer_benchmark(df, cols)
+        if result.empty:
+            return "No agent peer benchmark data (need Agent_Id column)."
+        lines = ["Agent peer benchmark (vs queue average):"]
+        for _, r in result.head(8).iterrows():
+            delta = r.get("vs_Queue_Avg", 0)
+            arrow = "▲" if delta > 0 else "▼" if delta < 0 else "="
+            lines.append(f"  {str(r.get('Agent_Id_','?')):<25} "
+                         f"{r['Detractor_Rate_%']:.1f}%  {arrow}{abs(delta):.1f}pp vs queue avg  "
+                         f"(rank #{int(r.get('Peer_Rank',0))} in {r.get('AGENT_QUEUE','?')})")
+        return "\n".join(lines)
+    result = ta.build_agent_ranking(df, cols)
+    if result.empty:
+        return "No agent ranking data (need Agent_Id column)."
+    lines = ["Agent ranking by detractor rate:"]
+    lines.append("  Worst performers:")
+    for _, r in result.head(5).iterrows():
+        lines.append(f"    {str(r.get('Agent_Id','?')):<25} {r['Detractor_Rate_%']:.1f}%  "
+                     f"Avg tNPS={r['Avg_TNPS']:.1f}  [{r['Band']}]  (n={int(r['Surveys'])})")
+    lines.append("  Best performers:")
+    for _, r in result[result["Detractor_Rate_%"] == 0].head(5).iterrows():
+        lines.append(f"    {str(r.get('Agent_Id','?')):<25} 0.0%  "
+                     f"Avg tNPS={r['Avg_TNPS']:.1f}  [{r['Band']}]")
+    return "\n".join(lines)
+
+
+def _answer_pattern(conn, q: str) -> str | None:
+    if not re.search(r"hour|time of day|day of week|weekday|weekend|pattern|"
+                     r"ساعة|يوم|أيام|نمط|وقت", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    if re.search(r"hour|time of day|ساعة|وقت", q):
+        result = ta.build_hour_pattern(df, cols)
+        if result.empty:
+            return None
+        worst = result.nlargest(3, "Detractor_Rate_%")
+        best = result[result["Surveys"] > 0].nsmallest(3, "Detractor_Rate_%")
+        lines = ["Detractor rate by hour of day:"]
+        lines.append("  Worst hours:")
+        for _, r in worst.iterrows():
+            lines.append(f"    {int(r['Hour']):02d}:00  →  {r['Detractor_Rate_%']:.1f}%  "
+                         f"({int(r['Detractors'])} det. / {int(r['Surveys'])} surveys)")
+        lines.append("  Best hours:")
+        for _, r in best.iterrows():
+            lines.append(f"    {int(r['Hour']):02d}:00  →  {r['Detractor_Rate_%']:.1f}%")
+        return "\n".join(lines)
+    result = ta.build_dow_pattern(df, cols)
+    if result.empty:
+        return None
+    lines = ["Detractor rate by day of week:"]
+    for _, r in result.iterrows():
+        bar = "█" * max(1, int(r["Detractor_Rate_%"] / 5))
+        lines.append(f"  {str(r['Day']):<12} {r['Detractor_Rate_%']:5.1f}%  {bar}")
+    return "\n".join(lines)
+
+
+def _answer_channel_fcr(conn, q: str) -> str | None:
+    if not re.search(r"channel|fcr|first.call|resolution|قناة|fcr", q):
+        return None
+    from . import tnps_analytics as ta
+    df, cols = ta.load_tnps_df(conn)
+    if df.empty:
+        return None
+    if re.search(r"fcr|first.call|resolution", q):
+        col = cols.get("fcr_flag")
+        if not col:
+            return "No FCR column found in your data."
+        result = ta.breakdown_by(df, col, cols)
+        if result.empty:
+            return None
+        lines = ["FCR impact on tNPS:"]
+        for _, r in result.iterrows():
+            lines.append(f"  FCR={r[col]:<5}  Det.Rate={r['Detractor_Rate_%']:.1f}%  "
+                         f"Avg tNPS={r['Avg_TNPS']:.2f}  (n={int(r['Completed_Surveys'])})")
+        return "\n".join(lines)
+    col = cols.get("channel")
+    if not col:
+        return "No channel column found in your data."
+    result = ta.breakdown_by(df, col, cols)
+    if result.empty:
+        return None
+    lines = ["Detractor rate by channel:"]
+    for _, r in result.iterrows():
+        lines.append(f"  {str(r[col]):<28} Det.Rate={r['Detractor_Rate_%']:.1f}%  "
+                     f"Avg tNPS={r['Avg_TNPS']:.2f}")
+    return "\n".join(lines)
+
+
 def _answer_cohort(conn, q: str) -> str | None:
     if not re.search(r"cohort|recovery|came back|returned|retained|استرداد|تعافي", q):
         return None
@@ -497,11 +706,14 @@ def _answer_mapping(conn, q: str) -> str | None:
             "You can also pass files directly:  roma map base.xlsx lookup.xlsx")
 
 
-_BUILDERS = [_answer_export, _answer_mapping, _answer_assumptions, _answer_stats, _answer_compare,
+_BUILDERS = [_answer_tnps_dashboard, _answer_export, _answer_mapping,
+             _answer_assumptions, _answer_stats, _answer_compare,
              _answer_alerts, _answer_identity,
              _answer_summary, _answer_detractors,
              _answer_drivers, _answer_segments, _answer_trend, _answer_anomalies,
              _answer_repeat, _answer_top_values, _answer_metric_by_dim, _answer_kpis,
+             _answer_forecast, _answer_waterfall, _answer_top_bottom,
+             _answer_agent_ranking, _answer_pattern, _answer_channel_fcr,
              _answer_cohort, _answer_velocity, _answer_toxic_combos]
 
 
