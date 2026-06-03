@@ -587,6 +587,41 @@ def cmd_forecast(args) -> int:
     return 0
 
 
+def cmd_skill(args) -> int:
+    """List or run a named analytics workflow skill."""
+    from . import skills as sk
+
+    if args.action == "list" or not args.action:
+        skill_list = sk.list_skills()
+        if not skill_list:
+            _say("No skills found. Add .txt or .yaml files to roma_data/skills/")
+            _say("Example files have been created for you there.")
+            return 0
+        _say("Available skills:")
+        for s in skill_list:
+            desc = f"  — {s.description}" if s.description else ""
+            _say(f"  {s.name:<25} ({len(s.steps)} steps){desc}")
+        _say(f"\n  Run a skill:  roma skill run <name>")
+        _say(f"  Location:     {sk.SKILLS_DIR}")
+        return 0
+
+    if args.action == "run":
+        name = " ".join(args.name) if args.name else ""
+        if not name:
+            _say("Usage: roma skill run <skill-name>")
+            return 1
+        skill = sk.get_skill(name)
+        if not skill:
+            _say(f"Skill '{name}' not found. Run 'roma skill list' to see available skills.")
+            return 1
+        conn = database.connect()
+        sk.run_skill(conn, skill, save=getattr(args, "save", False), verbose=True)
+        return 0
+
+    _say(f"Unknown skill action '{args.action}'. Use: list | run")
+    return 1
+
+
 def cmd_pptx(args) -> int:
     """Export a full e&-branded TNPS PowerPoint deck (10 slides)."""
     from . import export_docs as ed
@@ -703,6 +738,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     pp = sub.add_parser("pptx", help="Export full TNPS PowerPoint deck (10 slides, e& branded).")
     pp.set_defaults(func=cmd_pptx)
+
+    sk_p = sub.add_parser("skill", help="List or run reusable analytics workflow skills.")
+    sk_sub = sk_p.add_subparsers(dest="action")
+
+    sk_list = sk_sub.add_parser("list", help="List all available skills.")
+    sk_list.set_defaults(func=cmd_skill, action="list")
+
+    sk_run = sk_sub.add_parser("run", help="Run a named skill.")
+    sk_run.add_argument("name", nargs="*", help="Skill name (e.g. morning_review).")
+    sk_run.add_argument("--save", action="store_true",
+                        help="Save output as a Word document.")
+    sk_run.set_defaults(func=cmd_skill, action="run")
+
+    sk_p.set_defaults(func=cmd_skill, action="list", name=[])
 
     return p
 

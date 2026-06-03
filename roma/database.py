@@ -59,6 +59,53 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.commit()
+    # Upgrade documents table to FTS5 for ranked full-text search.
+    # Inspired by OpenJarvis SQLiteMemory (src/openjarvis/tools/storage/sqlite.py).
+    _upgrade_fts5(conn)
+
+
+def _fts5_available(conn: sqlite3.Connection) -> bool:
+    try:
+        opts = conn.execute("PRAGMA compile_options").fetchall()
+        return any("FTS5" in (o[0] or "").upper() for o in opts)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _upgrade_fts5(conn: sqlite3.Connection) -> None:
+    """Create documents_fts (FTS5 virtual table) if FTS5 is available.
+
+    The FTS5 table is a content table backed by `documents`, so it stays
+    in sync automatically on INSERT and can be rebuilt with `INSERT INTO
+    documents_fts(documents_fts) VALUES('rebuild')`.
+    """
+    if not _fts5_available(conn):
+        return
+    existing = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "documents_fts" not in existing:
+        try:
+            conn.executescript("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts
+                    USING fts5(
+                        source, title, content,
+                        content='documents', content_rowid='id',
+                        tokenize='porter unicode61'
+                    );
+                CREATE TRIGGER IF NOT EXISTS docs_ai
+                    AFTER INSERT ON documents BEGIN
+                    INSERT INTO documents_fts(rowid, source, title, content)
+                        VALUES (new.id, new.source, new.title, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS docs_ad
+                    AFTER DELETE ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, source, title, content)
+                        VALUES ('delete', old.id, old.source, old.title, old.content);
+                END;
+            """)
+            conn.commit()
+        except Exception:  # noqa: BLE001
+            pass  # older SQLite without FTS5 — graceful degrade
 
 
 def sanitize_identifier(name: str) -> str:
@@ -208,25 +255,67 @@ def run_sql(conn: sqlite3.Connection, query: str, max_rows: int = 200) -> dict[s
 
 def search_documents(conn: sqlite3.Connection, keywords: str,
                      limit: int = 10) -> dict[str, Any]:
-    """Keyword (LIKE) search across stored document chunks."""
-    terms = [t for t in re.split(r"\s+", keywords.strip()) if t]
-    if not terms:
+    """Full-text search across stored document chunks.
+
+    Uses FTS5 BM25 ranking when available (fast, relevance-ranked),
+    falls back to LIKE-based search for older SQLite builds.
+    Approach inspired by OpenJarvis SQLiteMemory.retrieve().
+    """
+    keywords = keywords.strip()
+    if not keywords:
         return {"matches": []}
+
+    # ── FTS5 path ────────────────────────────────────────────────────────
+    existing = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    if "documents_fts" in existing:
+        try:
+            # Porter-stem query: each word is an implicit AND prefix match
+            fts_query = " ".join(
+                f'"{t}"*' if len(t) > 3 else f'"{t}"'
+                for t in re.split(r"\s+", keywords) if t
+            )
+            rows = conn.execute(
+                """
+                SELECT d.source, d.title, d.chunk_index, d.content,
+                       bm25(documents_fts) AS score
+                FROM documents_fts
+                JOIN documents d ON documents_fts.rowid = d.id
+                WHERE documents_fts MATCH ?
+                ORDER BY score           -- lower bm25 = more relevant
+                LIMIT ?
+                """,
+                (fts_query, int(limit)),
+            ).fetchall()
+            matches = []
+            for r in rows:
+                snippet = r["content"]
+                if len(snippet) > 600:
+                    snippet = snippet[:600] + " …"
+                matches.append({"source": r["source"], "title": r["title"],
+                                 "chunk": r["chunk_index"], "text": snippet,
+                                 "score": round(float(r["score"]), 3)})
+            return {"matches": matches, "engine": "fts5"}
+        except Exception:  # noqa: BLE001
+            pass  # fall through to LIKE
+
+    # ── LIKE fallback ────────────────────────────────────────────────────
+    terms = [t for t in re.split(r"\s+", keywords) if t]
     where = " AND ".join("content LIKE ?" for _ in terms)
     params = [f"%{t}%" for t in terms]
     rows = conn.execute(
         f"SELECT source, title, chunk_index, content FROM documents "
         f"WHERE {where} LIMIT {int(limit)}",
         params,
-    )
+    ).fetchall()
     matches = []
     for r in rows:
         snippet = r["content"]
         if len(snippet) > 600:
-            snippet = snippet[:600] + " ..."
+            snippet = snippet[:600] + " …"
         matches.append({"source": r["source"], "title": r["title"],
-                        "chunk": r["chunk_index"], "text": snippet})
-    return {"matches": matches}
+                         "chunk": r["chunk_index"], "text": snippet})
+    return {"matches": matches, "engine": "like"}
 
 
 def reset(conn: sqlite3.Connection) -> None:

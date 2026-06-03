@@ -18,10 +18,16 @@ from typing import Any
 import pandas as pd
 
 from . import analyst, database, knowledge, kpis, localchat
+from .conversation import Conversation
 
 # ── Session state ──────────────────────────────────────────────────────────
-# Lightweight context dict: updated by builders that produce results so that
-# follow-up queries ("now filter by April", "same but for queue") can use it.
+# _CONV holds the sliding-window message history + last dim/table/time context.
+# Builders update _CONV.update_context() after producing results so that
+# follow-up queries ("now filter by April", "same but for queue") work.
+_CONV = Conversation(max_messages=20)
+
+# Back-compat alias — builders that wrote _SESSION["last_dim"] etc. still work
+# because _SESSION is kept in sync in answer() below.
 _SESSION: dict = {}
 
 # Chat history for /save — list of (question, answer) pairs this session.
@@ -331,6 +337,8 @@ def _answer_print_top(conn, q: str) -> str | None:
     _SESSION["last_table"] = found_table
     if time_label:
         _SESSION["last_time"] = time_label.strip(" ·").strip()
+    _CONV.update_context(dim=dim_col, table=found_table,
+                         time=time_label.strip(" ·").strip() if time_label else "")
     return _format_bordered_table(
         [dim_col, col2], rows,
         title=f"Top by {dim_col}  ·  table: {found_table}{time_label}")
@@ -1342,11 +1350,46 @@ def answer(conn, question: str, use_llm: bool, model: str | None) -> str:
     if teach is not None:
         return teach
 
-    structured = structured_answer(conn, question)
+    # 2) Expand vague follow-ups ("same for April", "repeat but queue") using
+    #    stored context from the previous successful builder call.
+    resolved = _CONV.resolve_followup(question)
+
+    # 3) For complex multi-step questions use the ReAct loop.
+    try:
+        from . import react
+        if react.is_complex(resolved):
+            llm_eng = llm_model = None
+            if use_llm and model:
+                try:
+                    from .llm import auto_engine
+                    llm_eng, llm_model = auto_engine()
+                except Exception:  # noqa: BLE001
+                    pass
+            react_ans = react.run(conn, resolved, llm_engine=llm_eng, model=llm_model)
+            if react_ans:
+                _CONV.add_user(question)
+                _CONV.add_assistant(react_ans)
+                if not re.search(r"\bsave\b.{0,15}\bchat\b|/save", question.lower()):
+                    _CHAT_LOG.append((question, react_ans))
+                _LAST_Q["text"] = question
+                return react_ans
+    except Exception:  # noqa: BLE001
+        pass
+
+    structured = structured_answer(conn, resolved)
 
     # record Q&A in session log for /save (skip save-chat itself to avoid recursion)
     if structured and not re.search(r"\bsave\b.{0,15}\bchat\b|/save", question.lower()):
         _CHAT_LOG.append((question, structured))
+
+    # Update conversation object so follow-up queries have context
+    if structured:
+        _CONV.add_user(question)
+        _CONV.add_assistant(structured)
+        # sync _SESSION from _CONV for back-compat
+        if _CONV.last_dim:   _SESSION["last_dim"]   = _CONV.last_dim
+        if _CONV.last_table: _SESSION["last_table"] = _CONV.last_table
+        if _CONV.last_time:  _SESSION["last_time"]  = _CONV.last_time
 
     if use_llm and model:
         context = structured or knowledge_text(conn)
