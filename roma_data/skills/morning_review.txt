@@ -1,0 +1,6 @@
+# Morning CX health-check
+my kpis
+forecast next 30 days
+show severity
+velocity alerts
+print top detractors by shortcode

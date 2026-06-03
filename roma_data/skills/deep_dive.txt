@@ -1,0 +1,7 @@
+# Full detractor deep-dive
+my kpis
+print top detractors by queue
+toxic combos
+agent ranking
+win-back recovery
+export tnps presentation
