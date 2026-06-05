@@ -1167,7 +1167,43 @@ def _answer_mapping(conn, q: str) -> str | None:
             "You can also run it from the terminal:  roma map  (same flow, no chat needed).")
 
 
+def _answer_skill(conn, q: str) -> str | None:
+    """Handle 'skill list', 'show skills', 'skill run <name>' inside roma chat."""
+    if not re.search(r"\bskills?\b", q):
+        return None
+    from . import skills as sk
+
+    # skill run <name>
+    run_m = re.search(r"skill\s+run\s+(.+)", q)
+    if run_m:
+        name = run_m.group(1).strip()
+        skill = sk.get_skill(name)
+        if not skill:
+            available = ", ".join(s.name for s in sk.list_skills())
+            return (f"Skill '{name}' not found.\n"
+                    f"  Available: {available}\n"
+                    f"  Usage: skill run morning_review")
+        log = sk.run_skill(conn, skill, save=False, verbose=False)
+        parts = [f"  Skill: {skill.name}  ({len(log)} steps)\n"]
+        for i, (step, ans) in enumerate(log, 1):
+            parts.append(f"  -- Step {i}: {step}\n{ans}")
+        return "\n\n".join(parts)
+
+    # skill list (default for any "skill" mention without "run")
+    skill_list = sk.list_skills()
+    if not skill_list:
+        return ("No skills found. Add .txt files to roma_data/skills/\n"
+                "  Example: morning_review, weekly_report, deep_dive")
+    lines = ["Available skills  (type: skill run <name> to execute):\n"]
+    for s in skill_list:
+        desc = f"  -- {s.description}" if s.description else ""
+        lines.append(f"  {s.name:<28} ({len(s.steps):2d} steps){desc}")
+    lines.append(f"\n  Folder: roma_data/skills/  (add your own .txt files there)")
+    return "\n".join(lines)
+
+
 _BUILDERS = [_answer_tnps_dashboard, _answer_save_chat, _answer_export,
+             _answer_skill,
              _answer_join_mapping, _answer_mapping,
              _answer_assumptions, _answer_stats, _answer_compare,
              _answer_alerts, _answer_identity,
@@ -1236,6 +1272,11 @@ def structured_answer(conn, question: str) -> str | None:
         a = _answer_assumptions(conn, q)
         if a:
             return a
+    # Skill queries — must run before NLU/identity so "roma skill list" works.
+    if re.search(r"\bskills?\b", q):
+        sk_ans = _answer_skill(conn, q)
+        if sk_ans:
+            return sk_ans
     # 1) Try the NLU layer: understand free phrasing, route to the right builder.
     nlu_ans = _nlu_route(conn, question)
     if nlu_ans:

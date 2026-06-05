@@ -844,3 +844,57 @@ class TestPrintTopTimeFilter:
         from roma.engine import _answer_print_top
         result = _answer_print_top(self.conn, "print top detractors by shortcode")
         assert result is None or isinstance(result, str)
+
+
+class TestAnswerSkill:
+    """Tests for _answer_skill builder — skill list and skill run from chat."""
+
+    def setup_method(self):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute(
+            """CREATE TABLE documents
+               (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+                title TEXT, chunk_index INTEGER DEFAULT 0, content TEXT NOT NULL)""")
+        self.conn.execute(
+            """CREATE TABLE _roma_sources
+               (name TEXT, kind TEXT, origin_file TEXT, rows INTEGER, added_at TEXT)""")
+        self.conn.commit()
+
+    def teardown_method(self):
+        self.conn.close()
+
+    def test_skill_list_returns_skills(self):
+        from roma.engine import _answer_skill
+        result = _answer_skill(self.conn, "skill list")
+        assert result is not None
+        assert "morning_review" in result
+
+    def test_show_skills_returns_skills(self):
+        from roma.engine import _answer_skill
+        result = _answer_skill(self.conn, "show skills")
+        assert result is not None
+        assert "steps" in result
+
+    def test_non_skill_query_returns_none(self):
+        from roma.engine import _answer_skill
+        result = _answer_skill(self.conn, "my kpis")
+        assert result is None
+
+    def test_skill_run_missing_returns_helpful_message(self):
+        from roma.engine import _answer_skill
+        result = _answer_skill(self.conn, "skill run nonexistent_skill_xyz")
+        assert result is not None
+        assert "not found" in result.lower()
+
+    def test_answer_routing_skill_list(self):
+        """Full answer() routing: 'skill list' must NOT return identity text."""
+        from roma.engine import answer
+        result = answer(self.conn, "skill list", False, None)
+        assert "morning_review" in result, f"Got identity instead: {result[:120]}"
+
+    def test_answer_routing_show_skills(self):
+        from roma.engine import answer
+        result = answer(self.conn, "show skills", False, None)
+        assert "morning_review" in result, f"Routing failed: {result[:120]}"
