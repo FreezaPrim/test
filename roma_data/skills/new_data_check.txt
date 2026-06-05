@@ -1,0 +1,7 @@
+# Run this after loading fresh survey data — quick sanity check
+what do you know?
+my kpis
+any anomalies?
+velocity alerts
+show severity
+forecast next 30 days

@@ -1,0 +1,8 @@
+# Agent coaching session — identify who needs help and who to reward
+agent ranking
+peer benchmark
+print top detractors by queue
+hour pattern
+day of week pattern
+show severity
+repeat callers

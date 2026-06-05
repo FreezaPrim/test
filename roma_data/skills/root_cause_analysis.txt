@@ -1,0 +1,12 @@
+# Root cause analysis — why is tNPS dropping?
+my kpis
+what drives tnps?
+toxic combos
+velocity alerts
+print top detractors by queue
+print top detractors by shortcode
+hour pattern
+day of week pattern
+channel comparison
+fcr impact
+show severity

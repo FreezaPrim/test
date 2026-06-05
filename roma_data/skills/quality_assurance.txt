@@ -1,0 +1,8 @@
+# QA / quality review — flag problem agents and queues
+show severity
+repeat callers
+agent ranking
+peer benchmark
+print top detractors by queue
+toxic combos
+hour pattern

@@ -1,0 +1,9 @@
+# Churn prevention — identify at-risk customers before they leave
+show severity
+repeat callers
+win-back recovery
+cohort analysis
+print top detractors by queue
+print top detractors by shortcode
+velocity alerts
+forecast next 30 days

@@ -1,0 +1,13 @@
+# Detractor action plan — everything needed to build a recovery plan
+my kpis
+show severity
+repeat callers
+print top detractors by shortcode
+print top detractors by queue
+toxic combos
+agent ranking
+win-back recovery
+cohort analysis
+forecast next 30 days
+export tnps presentation
+save chat

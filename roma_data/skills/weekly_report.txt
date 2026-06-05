@@ -1,0 +1,9 @@
+# Weekly CX Performance Report — every Monday morning
+my kpis
+nps waterfall
+velocity alerts
+print top detractors by queue
+print top detractors by shortcode
+agent ranking
+forecast next 30 days
+export tnps dashboard

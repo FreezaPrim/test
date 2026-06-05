@@ -1,0 +1,8 @@
+# Channel and FCR deep-dive — which channels drive detractors?
+channel comparison
+fcr impact
+print top detractors by shortcode
+print top detractors by queue
+hour pattern
+day of week pattern
+my kpis

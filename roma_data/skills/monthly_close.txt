@@ -1,0 +1,17 @@
+# End-of-month close — full analytics package + all exports
+my kpis
+nps waterfall
+top and bottom queues
+print top detractors by shortcode
+print top detractors by queue
+agent ranking
+peer benchmark
+win-back recovery
+show severity
+toxic combos
+velocity alerts
+cohort analysis
+forecast next 30 days
+export tnps dashboard
+export tnps presentation
+save chat
