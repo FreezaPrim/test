@@ -1,0 +1,91 @@
+{
+  "firing": {
+    "response_cooldown_days": 5.0,
+    "max_trials_per_cycle": 3,
+    "trial_cycle_gap_hours": 72.0,
+    "trial_cycle_key": null,
+    "window_start": "10:00",
+    "window_end": "21:00",
+    "window_end_inclusive": true,
+    "allowed_weekdays": null,
+    "exclude_non_compliant_from_base": false,
+    "subscriber_col_candidates": [
+      "MSISDN",
+      "MOBILE_NUMBER",
+      "MOBILE",
+      "PHONE",
+      "PHONE_NUMBER",
+      "A_NUMBER",
+      "ANI",
+      "SUBSCRIBER_ID",
+      "SUBSCRIBER",
+      "CUSTOMER_ID",
+      "BAN",
+      "CONTACT_NUMBER",
+      "CALLED_NUMBER",
+      "DIALED_NUMBER",
+      "B_NUMBER"
+    ],
+    "subscriber_normalise_last_n": 10
+  },
+  "analysis": {
+    "baseline_mode": "same_weekday",
+    "roll_window": 7,
+    "same_weekday_window": 4,
+    "roll_min_periods": 3,
+    "same_weekday_min_periods": 2,
+    "alpha": 0.05,
+    "fdr_correction": true,
+    "min_n_day": 20,
+    "min_n_group": 30,
+    "variance_floor_n": 50,
+    "top_n_impact": 15,
+    "top_n_per_day": 3,
+    "pareto_target": 0.8,
+    "cusum_k_sigma": 0.5,
+    "cusum_h_sigma": 4.0,
+    "pocket_min_n": 40,
+    "pocket_top_n": 20
+  },
+  "columns": {
+    "date": "OUTBOUND_IVR_DT",
+    "score": "Q1_ANSWER: TNPS",
+    "completion_flag": "SURVEY_COMPLETION_FLAG",
+    "short_code": "SHORT_CODE",
+    "agent_queue": "AGENT_QUEUE",
+    "interaction_id": "INTERACTION_ID",
+    "sr_number_candidates": [
+      "SR NUMBER",
+      "SR_NUMBER",
+      "SR No",
+      "SR_NO",
+      "SRNUMBER",
+      "SR Number",
+      "SR#",
+      "SR NO."
+    ],
+    "map_queue_key": "Agent Queue",
+    "map_levels": [
+      "Q Mapping Lev 1",
+      "Q Mapping Lev 2 Combined",
+      "Q Mapping Lev 3 New PF Seg",
+      "Q Mapping Lev 4 Seg",
+      "Site"
+    ],
+    "segment_col": "Q Mapping Lev 3 New PF Seg",
+    "map_sc_key": "SHORT_CODE",
+    "map_sc_cols": [
+      "Topic / Reason",
+      "Category",
+      "Owner"
+    ]
+  },
+  "request_type": {
+    "rule": "length",
+    "threshold": 10,
+    "label_hi": "SR",
+    "label_lo": "Activity",
+    "label_na": "(blank)",
+    "equal_is": "lo"
+  }
+}
