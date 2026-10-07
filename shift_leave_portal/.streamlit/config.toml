@@ -1,0 +1,26 @@
+# Streamlit server/client configuration for the portal.
+
+[server]
+# Keep CSRF/XSRF and CORS protections on (Streamlit defaults; stated explicitly).
+enableXsrfProtection = true
+enableCORS = true
+# Per-file upload limit in MB. Keep equal to MAX_UPLOAD_MB in .env
+# (the service layer enforces MAX_UPLOAD_MB regardless).
+maxUploadSize = 5
+runOnSave = false
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Never show Python tracebacks to end users; errors are logged server-side.
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[theme]
+base = "light"
+primaryColor = "#1f5fa8"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f3f5f8"
+textColor = "#1d2430"
