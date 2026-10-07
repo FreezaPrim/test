@@ -7,6 +7,7 @@ hard-coded for the real admin account.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import time, timedelta
 
 from sqlalchemy import select
@@ -66,6 +67,28 @@ def create_initial_admin(
     user, _ = user_service.create_user(session, None, data)
     logger.info("Created admin account %s", user.username)
     return user
+
+
+def ensure_admin_from_env(session: Session) -> str | None:
+    """Create the first admin from ``INITIAL_ADMIN_*`` variables if no admin exists.
+
+    Used on hosts where nobody can run ``manage.py`` (e.g. Streamlit Community
+    Cloud, where the variables come from the app's secrets). Returns the
+    username created, or ``None`` when an admin already exists or the
+    variables are not set.
+    """
+    if admin_exists(session):
+        return None
+    required = {
+        "username": os.getenv("INITIAL_ADMIN_USERNAME", "").strip(),
+        "full_name": os.getenv("INITIAL_ADMIN_FULL_NAME", "").strip(),
+        "employee_id": os.getenv("INITIAL_ADMIN_EMPLOYEE_ID", "").strip(),
+        "password": os.getenv("INITIAL_ADMIN_PASSWORD", ""),
+    }
+    if not all(required.values()):
+        return None
+    user = create_initial_admin(session, email=os.getenv("INITIAL_ADMIN_EMAIL") or None, **required)
+    return user.username
 
 
 def seed_demo_data(session: Session) -> list[str]:

@@ -95,6 +95,7 @@ class Settings:
     log_file: Path | None
     sql_echo: bool
     trust_proxy_headers: bool
+    auto_init_db: bool
     tz: ZoneInfo = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -151,6 +152,7 @@ def load_settings() -> Settings:
         log_file=_resolve_path(log_file_raw) if log_file_raw else None,
         sql_echo=_get_bool("SQL_ECHO", False),
         trust_proxy_headers=_get_bool("TRUST_PROXY_HEADERS", False),
+        auto_init_db=_get_bool("AUTO_INIT_DB", False),
     )
 
 

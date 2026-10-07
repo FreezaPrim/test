@@ -17,13 +17,12 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from alembic import command
-from alembic.config import Config
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.engine import make_url
 
 from config.settings import PROJECT_ROOT, configure_logging, get_settings
 from database.connection import session_scope
+from database.migrate import upgrade_database
 from database.schemas import friendly_errors
 from database.seed import (
     DEMO_PASSWORD_ADMIN,
@@ -36,16 +35,9 @@ from services.errors import AppError
 from utils.datetime_utils import now_local
 
 
-def alembic_config() -> Config:
-    """Return an Alembic config pointing at this project's migrations."""
-    cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
-    cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
-    return cfg
-
-
 def cmd_init_db(_args: argparse.Namespace) -> int:
     """Apply all database migrations."""
-    command.upgrade(alembic_config(), "head")
+    upgrade_database()
     print("Database is up to date.")
     return 0
 

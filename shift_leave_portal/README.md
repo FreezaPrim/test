@@ -188,7 +188,35 @@ Open http://localhost:8501. Use `--server.port 8600` to change the port and `--s
 pytest
 ```
 
-The suite (114 tests) uses a fresh temporary SQLite database per test and covers authentication and lockout, password policy, permissions/RBAC, validation, overlapping dates, status transitions and audit records, attachments, exports (columns, filters, formula-injection protection, permissions, audit), dashboards and the Alembic migration matching the models.
+The suite (117 tests) uses a fresh temporary SQLite database per test and covers authentication and lockout, password policy, permissions/RBAC, validation, overlapping dates, status transitions and audit records, attachments, exports (columns, filters, formula-injection protection, permissions, audit), dashboards and the Alembic migration matching the models.
+
+### 3.9 Publish a live demo on Streamlit Community Cloud (free)
+
+Use this for a **demo only**. Community Cloud stores the SQLite file on temporary disk, so every record and user created in the app is **lost whenever the app restarts, sleeps or is redeployed**. Real advisor data belongs on an internal server (section 5).
+
+1. Go to **https://share.streamlit.io** and sign in with the GitHub account that owns this repository.
+2. Click **Create app** → **Deploy a public app from GitHub** (or *Yup, I have an app*).
+3. Fill in:
+   * **Repository:** `<owner>/<repo>` (this repository)
+   * **Branch:** the branch that contains `shift_leave_portal/`
+   * **Main file path:** `shift_leave_portal/app.py`
+   * **App URL:** choose a name, e.g. `shift-leave-portal`
+4. Open **Advanced settings**, pick Python **3.12**, and paste into **Secrets** (choose your own admin password; it must meet the password rules):
+
+   ```toml
+   APP_ENV = "production"
+   AUTO_INIT_DB = true
+   APP_TIMEZONE = "Africa/Cairo"
+   INITIAL_ADMIN_USERNAME = "portal.admin"
+   INITIAL_ADMIN_FULL_NAME = "Portal Admin"
+   INITIAL_ADMIN_EMPLOYEE_ID = "ADM-001"
+   INITIAL_ADMIN_PASSWORD = "choose-a-strong-password"
+   ```
+
+5. Click **Deploy**. The first start takes a few minutes. Sign in with the admin account, then add advisors under **User management**.
+6. Recommended: in the app's **Settings → Sharing**, choose **Only specific people can view this app** and invite your testers by e-mail, so the sign-in page isn't open to the whole internet.
+
+How it works: top-level secrets are read as settings; with `AUTO_INIT_DB=true` the app runs the migrations and creates the admin from `INITIAL_ADMIN_*` whenever the database has no admin (so after each restart you sign in with the password from Secrets again). Security-relevant client options are applied in code because Community Cloud only reads `.streamlit/config.toml` from the repository root; the 5 MB upload limit is still enforced by the app, although the upload box will mention Streamlit's default of 200 MB.
 
 ---
 
